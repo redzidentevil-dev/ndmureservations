@@ -1,0 +1,274 @@
+/* ============================================================
+   NDMU Booking System - Design System
+   ============================================================ */
+
+:root {
+  --ndmu-navy: #1B2A4A;
+  --ndmu-gold: #F5A623;
+  --ndmu-dark: #0f1a2e;
+  --ndmu-emerald: #10b981;
+  --ndmu-info: #3b82f6;
+  --ndmu-light: #f8f9fa;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  color: #333;
+  background: var(--ndmu-light);
+}
+
+/* ---------- Navbar ---------- */
+.ndmu-navbar,
+.bg-ndmu-dark {
+  background: var(--ndmu-navy) !important;
+}
+
+.ndmu-navbar .navbar-brand img {
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3));
+}
+
+.ndmu-navbar .navbar-brand span {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* ---------- Page Banner ---------- */
+.page-banner,
+.banner {
+  background: linear-gradient(135deg, var(--ndmu-navy) 0%, #2d4373 100%);
+  color: #fff;
+  padding: 2rem 0;
+  margin-bottom: 1.5rem;
+  background-size: cover;
+  background-position: center;
+  position: relative;
+}
+
+.banner::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(27,42,74,0.82);
+}
+
+.banner > * {
+  position: relative;
+  z-index: 1;
+}
+
+.banner-content {
+  position: relative;
+  z-index: 1;
+}
+
+/* ---------- Cards ---------- */
+.card-lift {
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  border: 1px solid rgba(0,0,0,0.08);
+}
+
+.card-lift:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+}
+
+.card-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.icon-emerald {
+  background: rgba(16,185,129,0.12);
+  color: var(--ndmu-emerald);
+}
+
+.icon-info {
+  background: rgba(59,130,246,0.12);
+  color: var(--ndmu-info);
+}
+
+.icon-gold {
+  background: rgba(245,166,35,0.12);
+  color: var(--ndmu-gold);
+}
+
+.icon-navy {
+  background: rgba(27,42,74,0.1);
+  color: var(--ndmu-navy);
+}
+
+/* ---------- Admin Layout ---------- */
+.admin-layout {
+  display: flex;
+  min-height: calc(100vh - 56px);
+}
+
+.admin-sidebar {
+  width: 240px;
+  background: #fff;
+  border-right: 1px solid #e5e7eb;
+  padding: 1rem 0;
+  flex-shrink: 0;
+  position: sticky;
+  top: 56px;
+  height: calc(100vh - 56px);
+  overflow-y: auto;
+  z-index: 100;
+}
+
+.admin-sidebar .sidebar-nav {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.admin-sidebar .nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 1.25rem;
+  color: #4b5563;
+  text-decoration: none;
+  font-size: 0.9rem;
+  transition: background 0.15s, color 0.15s;
+}
+
+.admin-sidebar .nav-link:hover {
+  background: #f3f4f6;
+  color: var(--ndmu-navy);
+}
+
+.admin-sidebar .nav-link.active {
+  background: rgba(27,42,74,0.08);
+  color: var(--ndmu-navy);
+  font-weight: 600;
+}
+
+.admin-sidebar .nav-link i {
+  width: 20px;
+  text-align: center;
+}
+
+.sidebar-overlay {
+  display: none;
+}
+
+.admin-main {
+  flex: 1;
+  padding: 1.5rem 2rem;
+  min-width: 0;
+}
+
+@media (max-width: 991.98px) {
+  .admin-sidebar {
+    position: fixed;
+    left: -260px;
+    top: 56px;
+    height: calc(100vh - 56px);
+    transition: left 0.25s ease;
+    z-index: 1040;
+    box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+  }
+
+  .admin-sidebar.show {
+    left: 0;
+  }
+
+  .sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.35);
+    z-index: 1039;
+  }
+
+  .sidebar-overlay.show {
+    display: block;
+  }
+
+  .admin-main {
+    padding: 1rem;
+  }
+}
+
+/* ---------- Footer ---------- */
+.ndmu-footer {
+  background: var(--ndmu-navy);
+  color: rgba(255,255,255,0.6);
+  padding: 2rem 0 1.5rem;
+  margin-top: 3rem;
+}
+
+.ndmu-footer a {
+  color: rgba(255,255,255,0.5);
+  text-decoration: none;
+}
+
+.ndmu-footer a:hover {
+  color: #fff;
+}
+
+.footer-brand {
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: #fff;
+  margin-bottom: 0.25rem;
+}
+
+.footer-divider {
+  border-top: 1px solid rgba(255,255,255,0.1);
+  margin: 1rem 0;
+}
+
+/* ---------- Animations ---------- */
+.fade-up {
+  animation: fadeUp 0.4s ease both;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- Notifications ---------- */
+.notif-badge {
+  font-size: 0.65rem;
+}
+
+/* ---------- Tables ---------- */
+.table th {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+  font-weight: 600;
+}
+
+/* ---------- Badges ---------- */
+.badge {
+  font-weight: 500;
+  font-size: 0.75rem;
+}
+
+/* ---------- Buttons ---------- */
+.btn-warning {
+  color: var(--ndmu-navy);
+  font-weight: 600;
+}
+
+/* ---------- Misc ---------- */
+.text-white-50 {
+  color: rgba(255,255,255,0.5) !important;
+}
