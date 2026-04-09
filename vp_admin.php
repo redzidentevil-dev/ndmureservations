@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS facility_bookings (
     time_end             TIME         NOT NULL DEFAULT '17:00:00',
     purpose              TEXT,
     participants         INT          DEFAULT 0,
+    notes                TEXT,
     status               ENUM('pending','approved','rejected','fully_approved','cancelled')
                          DEFAULT 'pending',
     current_approval_role ENUM(
