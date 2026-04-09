@@ -2,100 +2,95 @@
 declare(strict_types=1);
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/db.php';
-require_once __DIR__ . '/includes/functions.php';
 
-requireLogin();
-
-$facilities = [];
+$faqsByCat = [];
 try {
-    $stmt = $pdo->query('SELECT id, name FROM facilities WHERE is_active = 1 ORDER BY name ASC');
-    $facilities = $stmt->fetchAll();
-} catch (Throwable) {}
+    $stmt = $pdo->query("SELECT id, category, question, answer FROM faq_entries WHERE is_active = 1 ORDER BY category ASC, sort_order ASC, id ASC");
+    foreach ($stmt->fetchAll() as $row) {
+        $cat = (string)($row['category'] ?: 'General');
+        $faqsByCat[$cat][] = $row;
+    }
+} catch (Throwable) {
+    $faqsByCat = [
+        'General' => [
+            ['id'=>1,'category'=>'General','question'=>'How do I book a facility?','answer'=>'Create an account, sign in, then use "Book a Facility" from your dashboard.'],
+            ['id'=>2,'category'=>'General','question'=>'How long does approval take?','answer'=>'Approvals follow an 8-step chain and may vary depending on availability of approvers.'],
+        ],
+    ];
+}
 ?>
 <?php require_once __DIR__ . '/includes/header.php'; ?>
 <?php require_once __DIR__ . '/includes/navbar.php'; ?>
 
-<div class="container py-4">
-  <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
-    <div>
-      <h1 class="h4 fw-bold mb-1">Facility Calendar</h1>
-      <div class="text-muted">Monthly view of facility bookings.</div>
+<!-- Page Banner -->
+<div class="page-banner">
+  <div class="container">
+    <div class="d-flex align-items-center gap-3">
+      <img src="assets/images/ndmulogo.png" alt="NDMU" width="48" height="48" style="object-fit:contain;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.2));">
+      <div>
+        <h1 class="h2 fw-bold mb-0">Frequently Asked Questions</h1>
+        <div class="text-white-50 small">Find quick answers before you book.</div>
+      </div>
     </div>
-    <div class="d-flex gap-2 align-items-center">
-      <label class="text-muted small">Filter facility</label>
-      <select id="facilityFilter" class="form-select" style="min-width:280px;">
-        <option value="">All facilities</option>
-        <?php foreach ($facilities as $f): ?>
-          <option value="<?= (int)$f['id'] ?>"><?= e((string)$f['name']) ?></option>
+  </div>
+</div>
+
+<div class="container pb-5">
+  <!-- Search -->
+  <div class="row justify-content-center mb-4 fade-up">
+    <div class="col-lg-8">
+      <div class="position-relative">
+        <i class="fa-solid fa-magnifying-glass position-absolute" style="left:1rem;top:50%;transform:translateY(-50%);color:var(--ndmu-text-muted);"></i>
+        <input id="faqSearch" class="form-control form-control-lg" placeholder="Search FAQs..." style="padding-left:2.75rem;">
+      </div>
+    </div>
+  </div>
+
+  <!-- FAQ Accordion -->
+  <div class="row justify-content-center">
+    <div class="col-lg-8">
+      <div class="accordion" id="faqAccordion">
+        <?php $idx = 0; foreach ($faqsByCat as $cat => $items): ?>
+          <div class="mb-4 fade-up">
+            <div class="section-heading mb-2"><?= e($cat) ?></div>
+            <?php foreach ($items as $item): $idx++; ?>
+              <div class="accordion-item faq-item" data-q="<?= e(strtolower((string)$item['question'] . ' ' . (string)$item['answer'])) ?>">
+                <h2 class="accordion-header" id="heading<?= (int)$idx ?>">
+                  <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse<?= (int)$idx ?>" aria-expanded="false" aria-controls="collapse<?= (int)$idx ?>">
+                    <?= e((string)$item['question']) ?>
+                  </button>
+                </h2>
+                <div id="collapse<?= (int)$idx ?>" class="accordion-collapse collapse" aria-labelledby="heading<?= (int)$idx ?>" data-bs-parent="#faqAccordion">
+                  <div class="accordion-body"><?= nl2br(e((string)$item['answer'])) ?></div>
+                </div>
+              </div>
+            <?php endforeach; ?>
+          </div>
         <?php endforeach; ?>
-      </select>
-      <a class="btn btn-outline-secondary" href="book_facility.php">Back</a>
-    </div>
-  </div>
-
-  <div class="card shadow-sm">
-    <div class="card-body">
-      <div id="calendar"></div>
-    </div>
-  </div>
-</div>
-
-<div class="modal fade" id="eventModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-lg modal-dialog-centered">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="eventTitle">Booking Details</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
-      <div class="modal-body" id="eventBody"></div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+
+      <!-- Still have questions? -->
+      <div class="text-center mt-4 fade-up">
+        <p class="text-muted mb-2">Can't find what you're looking for?</p>
+        <a href="contact.php" class="btn btn-warning">
+          <i class="fa-solid fa-envelope me-1"></i>Contact Us
+        </a>
       </div>
     </div>
   </div>
 </div>
 
-<link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
 <script>
   (function(){
-    const modalEl = document.getElementById('eventModal');
-    const modal = new bootstrap.Modal(modalEl);
-    const titleEl = document.getElementById('eventTitle');
-    const bodyEl = document.getElementById('eventBody');
-    const filter = document.getElementById('facilityFilter');
-
-    const calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
-      initialView: 'dayGridMonth',
-      height: 'auto',
-      events: (info, success, failure) => {
-        const url = new URL('get_facility_events.php', window.location.href);
-        if (filter.value) url.searchParams.set('facility_id', filter.value);
-        fetch(url, {headers:{'Accept':'application/json'}})
-          .then(r => r.json())
-          .then(success)
-          .catch(failure);
-      },
-      eventClick: (info) => {
-        const ext = info.event.extendedProps || {};
-        titleEl.textContent = info.event.title || 'Booking Details';
-        bodyEl.innerHTML = `
-          <div class="row g-2">
-            <div class="col-md-6"><b>Facility:</b> ${ext.facility_name || ''}</div>
-            <div class="col-md-6"><b>Student:</b> ${ext.student_name || ''}</div>
-            <div class="col-md-6"><b>Date:</b> ${ext.date_start || ''} to ${ext.date_end || ''}</div>
-            <div class="col-md-6"><b>Time:</b> ${ext.time_start || ''} to ${ext.time_end || ''}</div>
-            <div class="col-12"><b>Purpose:</b> ${ext.purpose || ''}</div>
-            <div class="col-12"><b>Notes:</b> ${ext.notes || ''}</div>
-            <div class="col-12"><b>Status:</b> ${ext.status_badge || ''} <span class="ms-2"><b>Reviewing:</b> ${ext.current_role_badge || ''}</span></div>
-          </div>
-        `;
-        modal.show();
-      }
+    const input = document.getElementById('faqSearch');
+    const items = Array.from(document.querySelectorAll('.faq-item'));
+    input?.addEventListener('input', () => {
+      const q = (input.value || '').trim().toLowerCase();
+      items.forEach(it => {
+        const hay = it.getAttribute('data-q') || '';
+        it.style.display = (!q || hay.includes(q)) ? '' : 'none';
+      });
     });
-    calendar.render();
-
-    filter.addEventListener('change', () => calendar.refetchEvents());
   })();
 </script>
 

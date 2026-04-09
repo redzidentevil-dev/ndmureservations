@@ -1,87 +1,48 @@
 <?php
+/**
+ * Add all missing facilities from the original schema.
+ * Visit once, then delete.
+ */
 declare(strict_types=1);
-require_once __DIR__ . '/auth.php';
-require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/includes/db.php';
 
-$user = getCurrentUser();
-$unreadCount = 0;
-if ($user) {
-    try {
-        $stmt = $pdo->prepare('SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0');
-        $stmt->execute([(int)$user['id']]);
-        $unreadCount = (int)$stmt->fetchColumn();
-    } catch (Throwable) {
-        $unreadCount = 0;
-    }
+$sql = <<<'SQL'
+INSERT IGNORE INTO facilities (name, location, capacity, is_active) VALUES
+('Covered Court',           'Campus Grounds',                        500,  1),
+('BRC Dining Hall',         'BRC Building',                          300,  1),
+('BRC Convention Hall',     'BRC Building',                          500,  1),
+('SMC Hall',                'Student Medical Center',                200,  1),
+('BRC Lobby',               'BRC Building',                          100,  1),
+('Dance Studio 1',          'Arts Building, 1st Floor',               50,  1),
+('Dance Studio 2',          'Arts Building, 2nd Floor',               50,  1),
+('Quadrangle',              'Campus Grounds',                       1000,  1),
+('Reviewing Stand',         'Campus Grounds',                        300,  1),
+('Soccer Field',            'Sports Complex',                       2000,  1),
+('Function Hall',           'Event Center',                          400,  1),
+('Gymnasium',               'Sports Complex',                        800,  1),
+('Tennis Court',            'Sports Complex',                        100,  1),
+('Badminton Court',         'Sports Complex',                        150,  1),
+('Dumont',                  'Classroom Building',                    100,  1),
+('Doherty',                 'Classroom Building',                    100,  1),
+('Teston',                  'Classroom Building',                    100,  1),
+('Omer',                    'Classroom Building',                    100,  1),
+('Creegan',                 'Classroom Building',                    100,  1),
+('SLR',                     'Student Learning Resource Center',      150,  1);
+SQL;
+
+$sqlItems = <<<'SQL'
+INSERT IGNORE INTO items (name, category, quantity_available, is_active) VALUES
+('Extension Cord (10m)',    'Equipment',  15,  1),
+('Whiteboard Markers Set',  'Supplies',   20,  1);
+SQL;
+
+try {
+    $pdo->exec($sql);
+    $pdo->exec($sqlItems);
+    echo '<h1>Data added successfully!</h1>';
+    echo '<p>20 additional facilities and 2 items have been inserted.</p>';
+    echo '<p><a href="book_facility.php">Go to Book Facility</a> | <a href="student_dashboard.php">Dashboard</a></p>';
+} catch (Throwable $e) {
+    echo '<h1>Error</h1>';
+    echo '<p>' . htmlspecialchars($e->getMessage()) . '</p>';
 }
-
-// Determine current page for active state
-$currentPage = basename($_SERVER['PHP_SELF'] ?? '');
-?>
-<nav class="navbar navbar-expand-lg navbar-dark ndmu-navbar">
-  <div class="container">
-    <a class="navbar-brand" href="<?= $user ? 'student_dashboard.php' : 'index.php' ?>">
-      <img src="assets/images/ndmulogo.png" alt="NDMU" width="32" height="32">
-      <span>NDMU Booking</span>
-    </a>
-
-    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#ndmuNav" aria-controls="ndmuNav" aria-expanded="false" aria-label="Toggle navigation">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-
-    <div class="collapse navbar-collapse" id="ndmuNav">
-      <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-        <li class="nav-item">
-          <a class="nav-link <?= $currentPage === 'index.php' ? 'active' : '' ?>" href="index.php">Home</a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link <?= $currentPage === 'faq.php' ? 'active' : '' ?>" href="faq.php">FAQ</a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link <?= $currentPage === 'contact.php' ? 'active' : '' ?>" href="contact.php">Contact</a>
-        </li>
-
-        <?php if ($user): ?>
-          <?php if ((string)$user['role'] === 'admin'): ?>
-            <li class="nav-item">
-              <a class="nav-link <?= str_starts_with($currentPage, 'admin') ? 'active' : '' ?>" href="admin_panel.php">
-                <i class="fa-solid fa-screwdriver-wrench me-1"></i>Admin
-              </a>
-            </li>
-          <?php endif; ?>
-          <li class="nav-item">
-            <a class="nav-link <?= $currentPage === 'profile.php' ? 'active' : '' ?>" href="profile.php">Profile</a>
-          </li>
-        <?php endif; ?>
-      </ul>
-
-      <ul class="navbar-nav ms-auto align-items-lg-center gap-lg-2">
-        <?php if ($user): ?>
-          <li class="nav-item">
-            <a class="nav-link position-relative" href="notifications.php" aria-label="Notifications">
-              <i class="fa-solid fa-bell"></i>
-              <span id="notifBadge"
-                    class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger notif-badge"
-                    style="<?= $unreadCount ? '' : 'display:none;' ?>">
-                <?= (int)$unreadCount ?>
-              </span>
-            </a>
-          </li>
-          <li class="nav-item d-none d-lg-block">
-            <span class="navbar-text small" style="color:rgba(255,255,255,0.5);"><?= e((string)$user['name']) ?></span>
-          </li>
-          <li class="nav-item">
-            <a class="btn btn-sm btn-outline-light" href="logout.php">Logout</a>
-          </li>
-        <?php else: ?>
-          <li class="nav-item">
-            <a class="btn btn-sm btn-outline-light" href="login.php">Sign In</a>
-          </li>
-          <li class="nav-item">
-            <a class="btn btn-sm btn-warning" href="register.php">Register</a>
-          </li>
-        <?php endif; ?>
-      </ul>
-    </div>
-  </div>
-</nav>

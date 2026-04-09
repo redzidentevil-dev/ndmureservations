@@ -5,243 +5,136 @@ require_once __DIR__ . '/includes/db.php';
 require_once __DIR__ . '/includes/functions.php';
 
 requireLogin();
-$user = getCurrentUser();
+$me = getCurrentUser();
 
-$itemId = (int)($_GET['item_id'] ?? 0);
-if ($itemId <= 0) {
-    redirectWithMessage('book_item.php', 'danger', 'Invalid item.');
+$id = (int)($_GET['id'] ?? 0);
+if ($id <= 0) {
+    redirectWithMessage('student_dashboard.php', 'danger', 'Invalid booking.');
 }
 
-$stmt = $pdo->prepare('SELECT id, name, category, quantity_available, photo_path FROM items WHERE id = ? AND is_active = 1');
-$stmt->execute([$itemId]);
-$item = $stmt->fetch();
-if (!$item) {
-    redirectWithMessage('book_item.php', 'danger', 'Item not found or inactive.');
+$stmt = $pdo->prepare(
+    "SELECT fb.*, f.name AS facility_name, f.location,
+            u.full_name AS student_name, u.student_id, u.department, u.email AS student_email
+     FROM facility_bookings fb
+     JOIN facilities f ON f.id = fb.facility_id
+     JOIN users u ON u.id = fb.user_id
+     WHERE fb.id = ?"
+);
+$stmt->execute([$id]);
+$b = $stmt->fetch();
+if (!$b) {
+    redirectWithMessage('student_dashboard.php', 'danger', 'Booking not found.');
 }
 
-$flash = getFlash();
-$error = null;
+$isOwner = ((int)$b['user_id'] === (int)$me['id']);
+$isAdmin = ((string)$me['role'] === 'admin');
+if (!$isOwner && !$isAdmin) {
+    redirectWithMessage(roleRedirectTarget((string)$me['role']), 'danger', 'Access denied.');
+}
+if ((string)$b['status'] !== 'fully_approved') {
+    redirectWithMessage($isAdmin ? 'admin_bookings.php' : 'student_dashboard.php', 'warning', 'Receipt is only available for fully approved bookings.');
+}
 
-function itemIsAvailable(PDO $pdo, int $itemId, int $qtyNeeded, string $borrowStart, string $returnEnd): array
-{
-    $stmt = $pdo->prepare('SELECT quantity_available FROM items WHERE id = ?');
-    $stmt->execute([$itemId]);
-    $availableNow = (int)$stmt->fetchColumn();
+$year = (new DateTime((string)($b['created_at'] ?? 'now')))->format('Y');
+$ref = 'FB-' . $year . '-' . str_pad((string)$id, 6, '0', STR_PAD_LEFT);
 
+$approvals = [];
+try {
     $stmt = $pdo->prepare(
-        "SELECT COALESCE(SUM(quantity_needed), 0)
-         FROM item_bookings
-         WHERE item_id = ?
-           AND status NOT IN ('rejected','cancelled')
-           AND (CONCAT(borrow_date,' ',borrow_time) < ?)
-           AND (CONCAT(return_date,' ',return_time) > ?)"
+        "SELECT a.role, a.action, a.action_at, a.notes, u.full_name AS approver_name
+         FROM facility_booking_approvals a
+         LEFT JOIN users u ON u.id = a.approver_user_id
+         WHERE a.booking_id = ? AND a.action IN ('approve','reject')
+         ORDER BY a.action_at ASC, a.id ASC"
     );
-    $stmt->execute([$itemId, $returnEnd, $borrowStart]);
-    $reserved = (int)$stmt->fetchColumn();
-
-    // quantity_available is treated as real-time stock on hand
-    $effective = $availableNow - $reserved;
-    if ($effective >= $qtyNeeded) {
-        return [true, "Available. Remaining after reservation: " . max(0, $effective - $qtyNeeded)];
+    $stmt->execute([$id]);
+    foreach ($stmt->fetchAll() as $r) {
+        $approvals[(string)$r['role']] = $r;
     }
-    return [false, "Not enough quantity available for the selected dates. Available: " . max(0, $effective)];
-}
+} catch (Throwable) {}
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    requireValidCsrfOrDie();
-
-    $qty = (int)($_POST['quantity_needed'] ?? 0);
-    $purpose = sanitizeInput($_POST['purpose'] ?? '');
-    $borrowDate = sanitizeInput($_POST['borrow_date'] ?? '');
-    $returnDate = sanitizeInput($_POST['return_date'] ?? '');
-    $borrowTime = sanitizeInput($_POST['borrow_time'] ?? '');
-    $returnTime = sanitizeInput($_POST['return_time'] ?? '');
-    $notes = sanitizeInput($_POST['notes'] ?? '');
-
-    if ($qty <= 0 || $purpose === '' || $borrowDate === '' || $returnDate === '' || $borrowTime === '' || $returnTime === '') {
-        $error = 'Please complete all required fields.';
-    } else {
-        $start = "{$borrowDate} {$borrowTime}:00";
-        $end = "{$returnDate} {$returnTime}:00";
-
-        try {
-            [$ok, $msg] = itemIsAvailable($pdo, $itemId, $qty, $start, $end);
-            if (!$ok) {
-                $error = $msg;
-            } else {
-                $pdo->beginTransaction();
-
-                // Re-check and decrement atomically
-                $stmt = $pdo->prepare('SELECT quantity_available FROM items WHERE id = ? FOR UPDATE');
-                $stmt->execute([$itemId]);
-                $avail = (int)$stmt->fetchColumn();
-                if ($avail < $qty) {
-                    $pdo->rollBack();
-                    $error = 'Not enough quantity available right now.';
-                } else {
-                    $stmt = $pdo->prepare(
-                        'INSERT INTO item_bookings
-                         (user_id, item_id, quantity_needed, purpose, borrow_date, return_date, borrow_time, return_time, notes, status, current_approval_role, created_at)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "pending", "adviser", NOW())'
-                    );
-                    $stmt->execute([(int)$user['id'], $itemId, $qty, $purpose, $borrowDate, $returnDate, $borrowTime, $returnTime, $notes]);
-                    $bookingId = (int)$pdo->lastInsertId();
-
-                    $stmt = $pdo->prepare('UPDATE items SET quantity_available = quantity_available - ? WHERE id = ?');
-                    $stmt->execute([$qty, $itemId]);
-
-                    $pdo->commit();
-
-                    $stmt = $pdo->query("SELECT id FROM users WHERE role = 'adviser' AND is_active = 1");
-                    foreach ($stmt->fetchAll() as $row) {
-                        sendNotification(
-                            $pdo,
-                            (int)$row['id'],
-                            'New Item Borrowing Request',
-                            "{$user['name']} submitted an item borrowing request for {$item['name']}.",
-                            'booking',
-                            $bookingId
-                        );
-                    }
-
-                    redirectWithMessage('student_dashboard.php', 'success', 'Item request submitted successfully.');
-                }
-            }
-        } catch (Throwable) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
-            $error = 'Unable to submit request. Please try again.';
-        }
-    }
-}
-
-$photo = (string)($item['photo_path'] ?? '');
-$img = $photo !== '' ? $photo : 'assets/images/ndmubg.jpg';
 ?>
 <?php require_once __DIR__ . '/includes/header.php'; ?>
-<?php require_once __DIR__ . '/includes/navbar.php'; ?>
 
-<div class="container py-4">
-  <?php if ($flash): ?>
-    <div class="alert alert-<?= e($flash['type']) ?>"><?= e($flash['message']) ?></div>
-  <?php endif; ?>
-  <?php if ($error): ?>
-    <div class="alert alert-danger"><?= e($error) ?></div>
-  <?php endif; ?>
+<div class="container py-4 position-relative">
+  <div class="watermark-approved">APPROVED</div>
 
-  <div class="card shadow-sm mb-4">
-    <div class="row g-0">
-      <div class="col-md-4">
-        <img src="<?= e($img) ?>" class="w-100 h-100" alt="<?= e((string)$item['name']) ?>" style="object-fit:cover;min-height:220px">
-      </div>
-      <div class="col-md-8">
-        <div class="card-body">
-          <h1 class="h4 fw-bold mb-1"><?= e((string)$item['name']) ?></h1>
-          <div class="text-muted mb-2"><?= e((string)($item['category'] ?? '')) ?></div>
-          <span class="badge bg-success">Available: <?= (int)($item['quantity_available'] ?? 0) ?></span>
-        </div>
-      </div>
-    </div>
+  <div class="d-flex justify-content-end gap-2 mb-3 no-print">
+    <button class="btn btn-success" onclick="window.print()"><i class="fa-solid fa-print me-1"></i>Print</button>
+    <button class="btn btn-outline-secondary" onclick="window.close()">Close</button>
   </div>
 
-  <div class="card shadow-sm">
-    <div class="card-body p-4">
-      <h2 class="h5 fw-semibold mb-3">Borrowing Details</h2>
-      <form method="post" id="itemBorrowForm">
-        <input type="hidden" name="csrf_token" value="<?= e(generateCsrfToken()) ?>">
-        <div class="row g-3">
-          <div class="col-md-4">
-            <label class="form-label">Quantity Needed</label>
-            <input id="qtyNeeded" class="form-control" type="number" min="1" name="quantity_needed" required value="<?= e($_POST['quantity_needed'] ?? '') ?>">
-          </div>
-          <div class="col-md-8">
-            <label class="form-label">Purpose</label>
-            <input class="form-control" name="purpose" required value="<?= e($_POST['purpose'] ?? '') ?>">
-          </div>
-          <div class="col-md-6">
-            <label class="form-label">Borrow Date</label>
-            <input id="borrowDate" class="form-control" name="borrow_date" required value="<?= e($_POST['borrow_date'] ?? '') ?>">
-          </div>
-          <div class="col-md-6">
-            <label class="form-label">Return Date</label>
-            <input id="returnDate" class="form-control" name="return_date" required value="<?= e($_POST['return_date'] ?? '') ?>">
-          </div>
-          <div class="col-md-6">
-            <label class="form-label">Borrow Time</label>
-            <input id="borrowTime" class="form-control" name="borrow_time" required value="<?= e($_POST['borrow_time'] ?? '') ?>">
-          </div>
-          <div class="col-md-6">
-            <label class="form-label">Return Time</label>
-            <input id="returnTime" class="form-control" name="return_time" required value="<?= e($_POST['return_time'] ?? '') ?>">
-          </div>
-          <div class="col-12">
-            <label class="form-label">Notes</label>
-            <textarea class="form-control" name="notes" rows="3"><?= e($_POST['notes'] ?? '') ?></textarea>
-          </div>
-        </div>
+  <div class="bg-white border rounded-3 p-4 position-relative" style="z-index:1;">
+    <div class="text-center mb-3">
+      <img src="assets/images/ndmulogo.png" alt="NDMU" width="80" height="80" style="object-fit:contain" class="mb-2">
+      <div class="fw-bold fs-4">NOTRE DAME OF MARBEL UNIVERSITY</div>
+      <div class="text-muted small">Marbel, Koronadal City, South Cotabato, Philippines</div>
+      <div class="fw-bold fs-5 mt-2">OFFICIAL BOOKING PERMIT</div>
+    </div>
 
-        <div id="availAlert" class="alert alert-danger mt-3 d-none"></div>
+    <div class="row g-3 mb-3">
+      <div class="col-md-6">
+        <div class="small text-muted">Booking Reference</div>
+        <div class="fw-semibold"><?= e($ref) ?></div>
+      </div>
+      <div class="col-md-6 text-md-end">
+        <div class="small text-muted">Date Issued</div>
+        <div class="fw-semibold"><?= e((new DateTime())->format('M d, Y')) ?></div>
+      </div>
+    </div>
 
-        <div class="d-flex gap-2 mt-3">
-          <button id="submitBtn" class="btn btn-warning fw-semibold">Submit Request</button>
-          <a class="btn btn-outline-secondary" href="book_item.php">Back</a>
-        </div>
-      </form>
+    <hr>
+
+    <div class="row g-3">
+      <div class="col-md-6">
+        <div class="fw-semibold mb-2">Student Information</div>
+        <div><b>Name:</b> <?= e((string)$b['student_name']) ?></div>
+        <div><b>Student ID:</b> <?= e((string)($b['student_id'] ?? '')) ?></div>
+        <div><b>Department:</b> <?= e((string)($b['department'] ?? '')) ?></div>
+        <div><b>Email:</b> <?= e((string)$b['student_email']) ?></div>
+      </div>
+      <div class="col-md-6">
+        <div class="fw-semibold mb-2">Booking Details</div>
+        <div><b>Facility:</b> <?= e((string)$b['facility_name']) ?></div>
+        <div><b>Location:</b> <?= e((string)$b['location']) ?></div>
+        <div><b>Date:</b> <?= e((string)$b['date_start']) ?> to <?= e((string)$b['date_end']) ?></div>
+        <div><b>Time:</b> <?= e((string)$b['time_start']) ?> to <?= e((string)$b['time_end']) ?></div>
+        <div><b>Participants:</b> <?= (int)$b['participants'] ?></div>
+      </div>
+      <div class="col-12">
+        <div><b>Purpose:</b> <?= e((string)$b['purpose']) ?></div>
+        <div><b>Notes:</b> <?= nl2br(e((string)($b['notes'] ?? ''))) ?></div>
+      </div>
+    </div>
+
+    <hr>
+
+    <div class="fw-semibold mb-2">Approval Signatures</div>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle">
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Approver</th>
+            <th>Date Approved</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <?php foreach (approvalChain() as $role): ?>
+            <?php $a = $approvals[$role] ?? null; ?>
+            <tr>
+              <td><?= e(ucwords(str_replace('_',' ', $role))) ?></td>
+              <td><?= e($a['approver_name'] ?? 'Pending') ?></td>
+              <td><?= e(!empty($a['action_at']) ? (new DateTime((string)$a['action_at']))->format('M d, Y') : 'Pending') ?></td>
+              <td><?= e((string)($a['notes'] ?? '')) ?></td>
+            </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
     </div>
   </div>
 </div>
 
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
-<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
-<script>
-  (function(){
-    flatpickr('#borrowDate', {dateFormat:'Y-m-d'});
-    flatpickr('#returnDate', {dateFormat:'Y-m-d'});
-    flatpickr('#borrowTime', {enableTime:true, noCalendar:true, dateFormat:'H:i', time_24hr:false});
-    flatpickr('#returnTime', {enableTime:true, noCalendar:true, dateFormat:'H:i', time_24hr:false});
-
-    const ids = ['qtyNeeded','borrowDate','returnDate','borrowTime','returnTime'];
-    const fields = ids.map(id => document.getElementById(id));
-    const alertBox = document.getElementById('availAlert');
-    const submitBtn = document.getElementById('submitBtn');
-    const csrfToken = document.querySelector('input[name="csrf_token"]')?.value || '';
-
-    async function check(){
-      const payload = {
-        item_id: <?= (int)$itemId ?>,
-        quantity_needed: fields[0].value,
-        borrow_date: fields[1].value,
-        return_date: fields[2].value,
-        borrow_time: fields[3].value,
-        return_time: fields[4].value,
-        csrf_token: csrfToken
-      };
-      if(!payload.quantity_needed || !payload.borrow_date || !payload.return_date || !payload.borrow_time || !payload.return_time){
-        alertBox.classList.add('d-none');
-        submitBtn.disabled = false;
-        return;
-      }
-      try{
-        const res = await fetch('check_item_conflict.php', {
-          method:'POST',
-          headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
-          body: new URLSearchParams(payload).toString()
-        });
-        const data = await res.json();
-        if(!data.available){
-          alertBox.textContent = data.message || 'Not available.';
-          alertBox.classList.remove('d-none');
-          submitBtn.disabled = true;
-        }else{
-          alertBox.classList.add('d-none');
-          submitBtn.disabled = false;
-        }
-      }catch(e){
-        alertBox.classList.add('d-none');
-        submitBtn.disabled = false;
-      }
-    }
-    fields.forEach(f => f?.addEventListener('change', check));
-  })();
-</script>
-
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
+

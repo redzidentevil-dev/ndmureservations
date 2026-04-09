@@ -5,59 +5,98 @@ require_once __DIR__ . '/includes/db.php';
 require_once __DIR__ . '/includes/functions.php';
 
 requireLogin();
-$user = getCurrentUser();
 
-$id = (int)($_GET['id'] ?? 0);
-if ($id <= 0) {
-    redirectWithMessage('student_dashboard.php', 'danger', 'Invalid booking.');
-}
-
-$stmt = $pdo->prepare(
-    'SELECT fb.*, f.name AS facility_name, f.location, f.photo_path
-     FROM facility_bookings fb
-     JOIN facilities f ON f.id = fb.facility_id
-     WHERE fb.id = ? AND fb.user_id = ?'
-);
-$stmt->execute([$id, (int)$user['id']]);
-$b = $stmt->fetch();
-if (!$b) {
-    redirectWithMessage('student_dashboard.php', 'danger', 'Booking not found.');
-}
+$facilities = [];
+try {
+    $stmt = $pdo->query('SELECT id, name FROM facilities WHERE is_active = 1 ORDER BY name ASC');
+    $facilities = $stmt->fetchAll();
+} catch (Throwable) {}
 ?>
 <?php require_once __DIR__ . '/includes/header.php'; ?>
 <?php require_once __DIR__ . '/includes/navbar.php'; ?>
 
-<div class="container py-5" style="max-width:780px;">
+<div class="container py-4">
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
+    <div>
+      <h1 class="h4 fw-bold mb-1">Facility Calendar</h1>
+      <div class="text-muted">Monthly view of facility bookings.</div>
+    </div>
+    <div class="d-flex gap-2 align-items-center">
+      <label class="text-muted small">Filter facility</label>
+      <select id="facilityFilter" class="form-select" style="min-width:280px;">
+        <option value="">All facilities</option>
+        <?php foreach ($facilities as $f): ?>
+          <option value="<?= (int)$f['id'] ?>"><?= e((string)$f['name']) ?></option>
+        <?php endforeach; ?>
+      </select>
+      <a class="btn btn-outline-secondary" href="book_facility.php">Back</a>
+    </div>
+  </div>
+
   <div class="card shadow-sm">
-    <div class="card-body p-4">
-      <div class="d-flex align-items-center gap-2 mb-3">
-        <i class="fa-regular fa-circle-check text-success fa-lg"></i>
-        <h1 class="h4 fw-bold mb-0">Booking Submitted</h1>
-      </div>
-      <div class="text-muted mb-4">Your request has been submitted for review.</div>
+    <div class="card-body">
+      <div id="calendar"></div>
+    </div>
+  </div>
+</div>
 
-      <div class="row g-3">
-        <div class="col-md-5">
-          <?php $img = $b['photo_path'] ? (string)$b['photo_path'] : 'assets/images/ndmubg.jpg'; ?>
-          <img src="<?= e($img) ?>" class="w-100 rounded" style="height:220px;object-fit:cover" alt="Facility">
-        </div>
-        <div class="col-md-7">
-          <div class="fw-semibold"><?= e((string)$b['facility_name']) ?></div>
-          <div class="text-muted small mb-2"><i class="fa-solid fa-location-dot me-1"></i><?= e((string)$b['location']) ?></div>
-          <div class="mb-2"><?= statusBadge((string)$b['status']) ?> <span class="ms-2">Reviewing: <?= approvalRoleBadge((string)$b['current_approval_role']) ?></span></div>
-          <div><b>Title:</b> <?= e((string)$b['title']) ?></div>
-          <div><b>Date:</b> <?= e((string)$b['date_start']) ?> to <?= e((string)$b['date_end']) ?></div>
-          <div><b>Time:</b> <?= e((string)$b['time_start']) ?> to <?= e((string)$b['time_end']) ?></div>
-          <div><b>Participants:</b> <?= (int)$b['participants'] ?></div>
-        </div>
+<div class="modal fade" id="eventModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="eventTitle">Booking Details</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
-
-      <div class="d-flex gap-2 mt-4">
-        <a class="btn btn-warning fw-semibold" href="student_dashboard.php">Go to Dashboard</a>
-        <a class="btn btn-outline-secondary" href="facility_calendar.php">View Calendar</a>
+      <div class="modal-body" id="eventBody"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
       </div>
     </div>
   </div>
 </div>
+
+<link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+<script>
+  (function(){
+    const modalEl = document.getElementById('eventModal');
+    const modal = new bootstrap.Modal(modalEl);
+    const titleEl = document.getElementById('eventTitle');
+    const bodyEl = document.getElementById('eventBody');
+    const filter = document.getElementById('facilityFilter');
+
+    const calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
+      initialView: 'dayGridMonth',
+      height: 'auto',
+      events: (info, success, failure) => {
+        const url = new URL('get_facility_events.php', window.location.href);
+        if (filter.value) url.searchParams.set('facility_id', filter.value);
+        fetch(url, {headers:{'Accept':'application/json'}})
+          .then(r => r.json())
+          .then(success)
+          .catch(failure);
+      },
+      eventClick: (info) => {
+        const ext = info.event.extendedProps || {};
+        titleEl.textContent = info.event.title || 'Booking Details';
+        bodyEl.innerHTML = `
+          <div class="row g-2">
+            <div class="col-md-6"><b>Facility:</b> ${ext.facility_name || ''}</div>
+            <div class="col-md-6"><b>Student:</b> ${ext.student_name || ''}</div>
+            <div class="col-md-6"><b>Date:</b> ${ext.date_start || ''} to ${ext.date_end || ''}</div>
+            <div class="col-md-6"><b>Time:</b> ${ext.time_start || ''} to ${ext.time_end || ''}</div>
+            <div class="col-12"><b>Purpose:</b> ${ext.purpose || ''}</div>
+            <div class="col-12"><b>Notes:</b> ${ext.notes || ''}</div>
+            <div class="col-12"><b>Status:</b> ${ext.status_badge || ''} <span class="ms-2"><b>Reviewing:</b> ${ext.current_role_badge || ''}</span></div>
+          </div>
+        `;
+        modal.show();
+      }
+    });
+    calendar.render();
+
+    filter.addEventListener('change', () => calendar.refetchEvents());
+  })();
+</script>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

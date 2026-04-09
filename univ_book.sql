@@ -1,333 +1,296 @@
-<?php
-declare(strict_types=1);
-require_once __DIR__ . '/includes/auth.php';
-require_once __DIR__ . '/includes/db.php';
-require_once __DIR__ . '/includes/functions.php';
+-- University Booking System Database
+-- School: Notre Dame of Marbel University (NDMU)
+-- Database Name: univ_book
+-- Updated: March 2026
 
-enforceCorrectDashboard('student');
-$user = getCurrentUser();
-$flash = getFlash();
+CREATE DATABASE IF NOT EXISTS univ_book;
+USE univ_book;
 
-$facilityBookings = [];
-$itemBookings = [];
+SET NAMES utf8mb4;
+SET FOREIGN_KEY_CHECKS = 0;
 
-try {
-    $stmt = $pdo->prepare(
-        "SELECT fb.*, f.name AS facility_name
-         FROM facility_bookings fb
-         JOIN facilities f ON f.id = fb.facility_id
-         WHERE fb.user_id = ?
-         ORDER BY fb.created_at DESC, fb.id DESC"
-    );
-    $stmt->execute([(int)$user['id']]);
-    $facilityBookings = $stmt->fetchAll();
-} catch (Throwable) {}
+-- =============================================================
+-- USERS
+-- Role defaults to 'student'. Admins assign other roles later.
+-- =============================================================
+CREATE TABLE IF NOT EXISTS users (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    full_name     VARCHAR(255)  NOT NULL,
+    email         VARCHAR(255)  NOT NULL UNIQUE,
+    password_hash VARCHAR(255)  NOT NULL,
+    role          ENUM(
+                    'student','adviser','staff',
+                    'dsa_director','ppss_director','dean',
+                    'avp_admin','vp_admin','president',
+                    'admin','janitor','security'
+                  ) NOT NULL DEFAULT 'student',
+    phone         VARCHAR(20),
+    department    VARCHAR(255),
+    student_id    VARCHAR(50),
+    profile_photo VARCHAR(255),
+    is_active     TINYINT(1)    DEFAULT 1,
+    created_at    TIMESTAMP     DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-try {
-    $stmt = $pdo->prepare(
-        "SELECT ib.*, i.name AS item_name, i.category
-         FROM item_bookings ib
-         JOIN items i ON i.id = ib.item_id
-         WHERE ib.user_id = ?
-         ORDER BY ib.created_at DESC, ib.id DESC"
-    );
-    $stmt->execute([(int)$user['id']]);
-    $itemBookings = $stmt->fetchAll();
-} catch (Throwable) {}
+-- =============================================================
+-- FACILITIES
+-- =============================================================
+CREATE TABLE IF NOT EXISTS facilities (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    name        VARCHAR(255) NOT NULL,
+    location    VARCHAR(255) NOT NULL,
+    capacity    INT          NOT NULL,
+    photo_path  VARCHAR(255),
+    description TEXT,
+    is_active   TINYINT(1)   DEFAULT 1,
+    created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-function progressForFacilityBooking(PDO $pdo, array $booking): array
-{
-    $chain = approvalChain();
-    $doneRoles = [];
-    try {
-        $stmt = $pdo->prepare("SELECT role FROM facility_booking_approvals WHERE booking_id = ? AND action = 'approve' ORDER BY action_at ASC, id ASC");
-        $stmt->execute([(int)$booking['id']]);
-        foreach ($stmt->fetchAll() as $r) $doneRoles[] = (string)$r['role'];
-    } catch (Throwable) {}
+-- =============================================================
+-- ITEMS (equipment / supplies)
+-- =============================================================
+CREATE TABLE IF NOT EXISTS items (
+    id                 INT AUTO_INCREMENT PRIMARY KEY,
+    name               VARCHAR(255) NOT NULL,
+    category           VARCHAR(100) NOT NULL,
+    quantity_available INT          NOT NULL DEFAULT 0,
+    photo_path         VARCHAR(255),
+    description        TEXT,
+    is_active          TINYINT(1)   DEFAULT 1,
+    created_at         TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-    $completed = [];
-    foreach ($chain as $role) {
-        $completed[$role] = in_array($role, $doneRoles, true);
-    }
+-- =============================================================
+-- FACILITY BOOKINGS
+-- Added: title, time_start, time_end, participants columns
+-- which are referenced in role_dashboard.php
+-- =============================================================
+CREATE TABLE IF NOT EXISTS facility_bookings (
+    id                   INT AUTO_INCREMENT PRIMARY KEY,
+    user_id              INT          NOT NULL,
+    facility_id          INT          NOT NULL,
+    title                VARCHAR(255) NOT NULL DEFAULT '',
+    date_start           DATE         NOT NULL,
+    date_end             DATE         NOT NULL,
+    time_start           TIME         NOT NULL DEFAULT '08:00:00',
+    time_end             TIME         NOT NULL DEFAULT '17:00:00',
+    purpose              TEXT,
+    participants         INT          DEFAULT 0,
+    notes                TEXT,
+    status               ENUM('pending','approved','rejected','fully_approved','cancelled')
+                         DEFAULT 'pending',
+    current_approval_role ENUM(
+                            'adviser','staff','dsa_director','ppss_director',
+                            'dean','avp_admin','vp_admin','president'
+                          ) DEFAULT 'adviser',
+    rejection_reason     TEXT,
+    created_at           TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    approved_at          TIMESTAMP    NULL,
+    FOREIGN KEY (user_id)      REFERENCES users(id)      ON DELETE CASCADE,
+    FOREIGN KEY (facility_id)  REFERENCES facilities(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-    if ((string)$booking['status'] === 'fully_approved') {
-        foreach ($chain as $role) $completed[$role] = true;
-    }
-    return $completed;
-}
-?>
-<?php require_once __DIR__ . '/includes/header.php'; ?>
-<?php require_once __DIR__ . '/includes/navbar.php'; ?>
+-- =============================================================
+-- ITEM BOOKINGS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS item_bookings (
+    id                   INT AUTO_INCREMENT PRIMARY KEY,
+    user_id              INT NOT NULL,
+    item_id              INT NOT NULL,
+    quantity_requested   INT NOT NULL,
+    date_start           DATETIME NOT NULL,
+    date_end             DATETIME NOT NULL,
+    purpose              TEXT,
+    status               ENUM('pending','approved','rejected','fully_approved','cancelled')
+                         DEFAULT 'pending',
+    current_approval_role ENUM(
+                            'adviser','staff','dsa_director','ppss_director',
+                            'dean','avp_admin','vp_admin','president'
+                          ) DEFAULT 'adviser',
+    rejection_reason     TEXT,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    approved_at          TIMESTAMP NULL,
+    FOREIGN KEY (user_id)  REFERENCES users(id)  ON DELETE CASCADE,
+    FOREIGN KEY (item_id)  REFERENCES items(id)  ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-<!-- Dashboard Banner -->
-<div class="page-banner">
-  <div class="container">
-    <div class="d-flex align-items-center gap-3">
-      <img src="assets/images/ndmulogo.png" alt="NDMU" width="48" height="48" style="object-fit:contain;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.2));">
-      <div>
-        <h1 class="h3 fw-bold mb-0" style="color:#fff;">Welcome, <?= e((string)$user['name']) ?></h1>
-        <div class="text-white-50 small">NDMU Facility Booking System Dashboard</div>
-      </div>
-    </div>
-  </div>
-</div>
+-- =============================================================
+-- MAINTENANCE ALERTS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS maintenance_alerts (
+    id                  INT AUTO_INCREMENT PRIMARY KEY,
+    facility_id         INT NOT NULL,
+    title               VARCHAR(255) NOT NULL,
+    description         TEXT,
+    severity            ENUM('low','medium','high','critical') DEFAULT 'medium',
+    date_start          DATETIME NOT NULL,
+    date_end            DATETIME NOT NULL,
+    assigned_to_role    ENUM('janitor','security','staff','admin'),
+    status              ENUM('scheduled','in_progress','completed','cancelled') DEFAULT 'scheduled',
+    created_by_user_id  INT NOT NULL,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (facility_id)        REFERENCES facilities(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by_user_id) REFERENCES users(id)      ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-<div class="container pb-5">
-  <?php if ($flash): ?>
-    <div class="alert alert-<?= e($flash['type']) ?> fade-up"><?= e($flash['message']) ?></div>
-  <?php endif; ?>
+-- =============================================================
+-- FAQ ENTRIES
+-- =============================================================
+CREATE TABLE IF NOT EXISTS faq_entries (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    category   VARCHAR(100) NOT NULL,
+    question   TEXT         NOT NULL,
+    answer     TEXT         NOT NULL,
+    sort_order INT          DEFAULT 0,
+    is_active  TINYINT(1)   DEFAULT 1,
+    created_at TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-  <!-- Quick Actions -->
-  <div class="row g-3 mb-4 fade-up">
-    <div class="col-sm-6 col-md-3">
-      <a href="book_facility.php" class="card card-lift text-decoration-none h-100">
-        <div class="card-body d-flex align-items-center gap-3">
-          <div class="card-icon icon-emerald"><i class="fa-regular fa-calendar-days"></i></div>
-          <div>
-            <div class="fw-bold small" style="color:var(--ndmu-navy);">Book Facility</div>
-            <div class="text-muted" style="font-size:0.75rem;">Reserve a venue</div>
-          </div>
-        </div>
-      </a>
-    </div>
-    <div class="col-sm-6 col-md-3">
-      <a href="book_item.php" class="card card-lift text-decoration-none h-100">
-        <div class="card-body d-flex align-items-center gap-3">
-          <div class="card-icon icon-info"><i class="fa-solid fa-box-open"></i></div>
-          <div>
-            <div class="fw-bold small" style="color:var(--ndmu-navy);">Borrow Item</div>
-            <div class="text-muted" style="font-size:0.75rem;">Request equipment</div>
-          </div>
-        </div>
-      </a>
-    </div>
-    <div class="col-sm-6 col-md-3">
-      <a href="notifications.php" class="card card-lift text-decoration-none h-100">
-        <div class="card-body d-flex align-items-center gap-3">
-          <div class="card-icon icon-gold"><i class="fa-solid fa-bell"></i></div>
-          <div>
-            <div class="fw-bold small" style="color:var(--ndmu-navy);">Notifications</div>
-            <div class="text-muted" style="font-size:0.75rem;">View updates</div>
-          </div>
-        </div>
-      </a>
-    </div>
-    <div class="col-sm-6 col-md-3">
-      <a href="profile.php" class="card card-lift text-decoration-none h-100">
-        <div class="card-body d-flex align-items-center gap-3">
-          <div class="card-icon icon-navy"><i class="fa-solid fa-user"></i></div>
-          <div>
-            <div class="fw-bold small" style="color:var(--ndmu-navy);">My Profile</div>
-            <div class="text-muted" style="font-size:0.75rem;">Account settings</div>
-          </div>
-        </div>
-      </a>
-    </div>
-  </div>
+-- =============================================================
+-- SYSTEM SETTINGS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS system_settings (
+    `key`   VARCHAR(100) PRIMARY KEY,
+    `value` TEXT NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-  <!-- Tabs -->
-  <ul class="nav nav-tabs fade-up" id="dashTabs" role="tablist">
-    <li class="nav-item" role="presentation">
-      <button class="nav-link active" id="fac-tab" data-bs-toggle="tab" data-bs-target="#fac" type="button" role="tab">
-        <i class="fa-regular fa-calendar-days me-1"></i>Facility Bookings
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="item-tab" data-bs-toggle="tab" data-bs-target="#item" type="button" role="tab">
-        <i class="fa-solid fa-box-open me-1"></i>Item Bookings
-      </button>
-    </li>
-  </ul>
+-- =============================================================
+-- NOTIFICATIONS
+-- Added: type and booking_id columns used by functions.php
+-- =============================================================
+CREATE TABLE IF NOT EXISTS notifications (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    user_id    INT          NOT NULL,
+    title      VARCHAR(255) NOT NULL,
+    message    TEXT         NOT NULL,
+    type       VARCHAR(50)  DEFAULT 'info',
+    booking_id INT          DEFAULT NULL,
+    is_read    TINYINT(1)   DEFAULT 0,
+    created_at TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-  <div class="tab-content fade-up" id="dashTabsContent">
-    <!-- Facility Bookings Tab -->
-    <div class="tab-pane fade show active" id="fac" role="tabpanel" aria-labelledby="fac-tab">
-      <div class="d-flex justify-content-between align-items-center mb-3">
-        <div class="text-muted small">Your facility booking requests</div>
-        <a class="btn btn-sm btn-warning" href="book_facility.php"><i class="fa-solid fa-plus me-1"></i>New Booking</a>
-      </div>
+-- =============================================================
+-- MESSAGES (contact form)
+-- =============================================================
+CREATE TABLE IF NOT EXISTS messages (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    name       VARCHAR(255) NOT NULL,
+    email      VARCHAR(255) NOT NULL,
+    subject    VARCHAR(255) NOT NULL,
+    message    TEXT         NOT NULL,
+    created_at TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-      <?php if (!$facilityBookings): ?>
-        <div class="alert alert-info">No facility bookings yet. Start by creating your first reservation.</div>
-      <?php else: ?>
-        <div class="table-responsive">
-          <table class="table align-middle">
-            <thead>
-              <tr>
-                <th>Title</th>
-                <th>Facility</th>
-                <th>Dates</th>
-                <th>Status</th>
-                <th>Reviewing</th>
-                <th style="min-width:320px;">Progress</th>
-                <th class="text-end">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php foreach ($facilityBookings as $b): ?>
-                <?php $progress = progressForFacilityBooking($pdo, $b); ?>
-                <tr>
-                  <td class="fw-semibold"><?= e((string)$b['title']) ?></td>
-                  <td><?= e((string)$b['facility_name']) ?></td>
-                  <td>
-                    <div class="small"><?= e((string)$b['date_start']) ?> &rarr; <?= e((string)$b['date_end']) ?></div>
-                    <div class="text-muted small"><?= e((string)$b['time_start']) ?> &rarr; <?= e((string)$b['time_end']) ?></div>
-                  </td>
-                  <td><?= statusBadge((string)$b['status']) ?></td>
-                  <td><?= approvalRoleBadge((string)($b['current_approval_role'] ?? '')) ?></td>
-                  <td>
-                    <div class="d-flex flex-wrap gap-1">
-                      <?php foreach (approvalChain() as $role): ?>
-                        <?php $done = !empty($progress[$role]); ?>
-                        <span class="badge <?= $done ? 'bg-success' : 'bg-light' ?>">
-                          <?= $done ? '<i class="fa-solid fa-check" style="font-size:0.625rem;"></i>' : '<i class="fa-solid fa-circle" style="font-size:0.375rem;opacity:0.4;"></i>' ?>
-                          <?= e(ucwords(str_replace('_',' ', $role))) ?>
-                        </span>
-                      <?php endforeach; ?>
-                    </div>
-                  </td>
-                  <td class="text-end">
-                    <div class="d-flex justify-content-end gap-1 flex-wrap">
-                      <?php if ((string)$b['status'] === 'pending'): ?>
-                        <a class="btn btn-sm btn-outline-primary" href="edit_facility_booking.php?id=<?= (int)$b['id'] ?>">Edit</a>
-                      <?php endif; ?>
-                      <?php if (!in_array((string)$b['status'], ['fully_approved','rejected'], true)): ?>
-                        <form method="post" action="cancel_booking.php" class="d-inline">
-                          <input type="hidden" name="csrf_token" value="<?= e(generateCsrfToken()) ?>">
-                          <input type="hidden" name="type" value="facility">
-                          <input type="hidden" name="id" value="<?= (int)$b['id'] ?>">
-                          <button class="btn btn-sm btn-outline-danger" onclick="return confirm('Cancel this booking?')">Cancel</button>
-                        </form>
-                      <?php endif; ?>
-                      <?php if ((string)$b['status'] === 'fully_approved'): ?>
-                        <a class="btn btn-sm btn-success" target="_blank" href="download_receipt.php?id=<?= (int)$b['id'] ?>">
-                          <i class="fa-solid fa-download me-1"></i>Receipt
-                        </a>
-                      <?php endif; ?>
-                    </div>
-                  </td>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-      <?php endif; ?>
+-- =============================================================
+-- INDEXES
+-- =============================================================
+CREATE INDEX idx_users_email                          ON users(email);
+CREATE INDEX idx_users_role                           ON users(role);
+CREATE INDEX idx_facility_bookings_user_id            ON facility_bookings(user_id);
+CREATE INDEX idx_facility_bookings_facility_id        ON facility_bookings(facility_id);
+CREATE INDEX idx_facility_bookings_status             ON facility_bookings(status);
+CREATE INDEX idx_facility_bookings_approval_role      ON facility_bookings(current_approval_role);
+CREATE INDEX idx_item_bookings_user_id                ON item_bookings(user_id);
+CREATE INDEX idx_item_bookings_item_id                ON item_bookings(item_id);
+CREATE INDEX idx_item_bookings_status                 ON item_bookings(status);
+CREATE INDEX idx_item_bookings_approval_role          ON item_bookings(current_approval_role);
+CREATE INDEX idx_maintenance_alerts_facility_id       ON maintenance_alerts(facility_id);
+CREATE INDEX idx_maintenance_alerts_assigned_to_role  ON maintenance_alerts(assigned_to_role);
+CREATE INDEX idx_maintenance_alerts_status            ON maintenance_alerts(status);
+CREATE INDEX idx_notifications_user_id                ON notifications(user_id);
+CREATE INDEX idx_notifications_is_read                ON notifications(is_read);
 
-      <div class="mt-4">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <div class="fw-semibold small">Availability Calendar</div>
-          <div class="text-muted" style="font-size:0.75rem;">Auto-refreshes every 30s</div>
-        </div>
-        <div class="card">
-          <div class="card-body p-2">
-            <div id="miniFacilityCalendar" class="mini-calendar"></div>
-          </div>
-        </div>
-      </div>
-    </div>
+-- =============================================================
+-- DEFAULT ADMIN ACCOUNT
+-- Password: Super@admin123
+-- =============================================================
+INSERT INTO users (full_name, email, password_hash, role, is_active) VALUES
+('System Administrator', 'admin@ndmu.edu.ph',
+ '$2b$12$JBdcE.z4YOsVXHwudM05FuPnw0mau37SEMb1lUtX.fekjr/SYyz16',
+ 'admin', 1);
 
-    <!-- Item Bookings Tab -->
-    <div class="tab-pane fade" id="item" role="tabpanel" aria-labelledby="item-tab">
-      <div class="d-flex justify-content-between align-items-center mb-3">
-        <div class="text-muted small">Your item borrowing requests</div>
-        <a class="btn btn-sm btn-warning" href="book_item.php"><i class="fa-solid fa-plus me-1"></i>New Request</a>
-      </div>
+-- =============================================================
+-- SYSTEM SETTINGS DEFAULTS
+-- =============================================================
+INSERT INTO system_settings (`key`, `value`) VALUES
+('school_name',             'Notre Dame of Marbel University'),
+('address',                 'Marbel, Koronadal City, South Cotabato, Philippines'),
+('site_description',        'Facility and Item Booking System'),
+('contact_email',           'admin@ndmu.edu.ph'),
+('timezone',                'Asia/Manila'),
+('max_booking_days_ahead',  '30'),
+('require_approval',        '1'),
+('allow_weekend_bookings',  '0');
 
-      <?php if (!$itemBookings): ?>
-        <div class="alert alert-info">No item bookings yet. Start by requesting equipment.</div>
-      <?php else: ?>
-        <div class="table-responsive">
-          <table class="table align-middle">
-            <thead>
-              <tr>
-                <th>Item</th>
-                <th>Category</th>
-                <th>Dates</th>
-                <th>Qty</th>
-                <th>Status</th>
-                <th>Reviewing</th>
-                <th class="text-end">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php foreach ($itemBookings as $b): ?>
-                <tr>
-                  <td class="fw-semibold"><?= e((string)$b['item_name']) ?></td>
-                  <td><?= e((string)($b['category'] ?? '')) ?></td>
-                  <td>
-                    <div class="small"><?= e((string)$b['borrow_date']) ?> &rarr; <?= e((string)$b['return_date']) ?></div>
-                    <div class="text-muted small"><?= e((string)$b['borrow_time']) ?> &rarr; <?= e((string)$b['return_time']) ?></div>
-                  </td>
-                  <td><?= (int)$b['quantity_needed'] ?></td>
-                  <td><?= statusBadge((string)$b['status']) ?></td>
-                  <td><?= approvalRoleBadge((string)($b['current_approval_role'] ?? '')) ?></td>
-                  <td class="text-end">
-                    <?php if (!in_array((string)$b['status'], ['fully_approved','rejected'], true)): ?>
-                      <form method="post" action="cancel_booking.php" class="d-inline">
-                        <input type="hidden" name="csrf_token" value="<?= e(generateCsrfToken()) ?>">
-                        <input type="hidden" name="type" value="item">
-                        <input type="hidden" name="id" value="<?= (int)$b['id'] ?>">
-                        <button class="btn btn-sm btn-outline-danger" onclick="return confirm('Cancel this request?')">Cancel</button>
-                      </form>
-                    <?php else: ?>
-                      <span class="text-muted small">&mdash;</span>
-                    <?php endif; ?>
-                  </td>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-      <?php endif; ?>
+-- =============================================================
+-- SAMPLE FAQ ENTRIES
+-- =============================================================
+INSERT INTO faq_entries (category, question, answer, sort_order, is_active) VALUES
+('General', 'How do I book a facility?',
+ 'Log in to your account, go to Facilities, select a facility, pick your date and time, and submit. Your request will go through the approval workflow.',
+ 1, 1),
+('General', 'How do I borrow equipment?',
+ 'Go to Items, choose the equipment you need, specify quantity and dates, and submit for approval.',
+ 2, 1),
+('General', 'What is the approval process?',
+ 'Bookings follow a multi-level approval chain: Adviser → Staff → Dean → PPSS Director → DSA Director → AVP Admin → VP Admin → President.',
+ 3, 1),
+('General', 'What role will I have after registering?',
+ 'All newly registered accounts are assigned the Student role by default. An administrator can change your role to Faculty, Staff, or another role as needed.',
+ 4, 1),
+('Facilities', 'Can I book on weekends?',
+ 'Weekend availability depends on system settings and the specific facility. Check the facility calendar for open slots.',
+ 5, 1),
+('Items', 'How long can I borrow equipment?',
+ 'Borrowing periods vary by item. Check the item detail page for the maximum duration.',
+ 6, 1),
+('Technical', 'I forgot my password. What do I do?',
+ 'Click "Forgot Password" on the login page and follow the instructions sent to your registered email.',
+ 7, 1);
 
-      <div class="mt-4">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <div class="fw-semibold small">Availability Calendar</div>
-          <div class="text-muted" style="font-size:0.75rem;">Auto-refreshes every 30s</div>
-        </div>
-        <div class="card">
-          <div class="card-body p-2">
-            <div id="miniItemCalendar" class="mini-calendar"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
+-- =============================================================
+-- SAMPLE FACILITIES
+-- =============================================================
+INSERT INTO facilities (name, location, capacity, is_active) VALUES
+('NDMU Auditorium',         'Main Building, Ground Floor',           800,  1),
+('AVP Conference Room',     'Administration Building, 2nd Floor',     40,  1),
+('College Gymnasium',       'Sports Complex',                        1000,  1),
+('Computer Laboratory 1',   'IT Building, 1st Floor',                 30,  1),
+('Library Study Room A',    'Library Building, 3rd Floor',            20,  1),
+('Covered Court',           'Campus Grounds',                        500,  1),
+('Multi-Purpose Hall',      'Student Center',                        200,  1),
+('BRC Dining Hall',         'BRC Building',                          300,  1),
+('BRC Convention Hall',     'BRC Building',                          500,  1),
+('SMC Hall',                'Student Medical Center',                200,  1),
+('BRC Lobby',               'BRC Building',                          100,  1),
+('Dance Studio 1',          'Arts Building, 1st Floor',               50,  1),
+('Dance Studio 2',          'Arts Building, 2nd Floor',               50,  1),
+('Quadrangle',              'Campus Grounds',                       1000,  1),
+('Reviewing Stand',         'Campus Grounds',                        300,  1),
+('Soccer Field',            'Sports Complex',                       2000,  1),
+('Function Hall',           'Event Center',                          400,  1),
+('Gymnasium',               'Sports Complex',                        800,  1),
+('Tennis Court',            'Sports Complex',                        100,  1),
+('Badminton Court',         'Sports Complex',                        150,  1),
+('Dumont',                  'Classroom Building',                    100,  1),
+('Doherty',                 'Classroom Building',                    100,  1),
+('Teston',                  'Classroom Building',                    100,  1),
+('Omer',                    'Classroom Building',                    100,  1),
+('Creegan',                 'Classroom Building',                    100,  1),
+('SLR',                     'Student Learning Resource Center',      150,  1);
 
-<link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
-<script>
-  (function(){
-    function buildMiniCalendar(elId, feedUrl){
-      const el = document.getElementById(elId);
-      if(!el) return null;
+-- =============================================================
+-- SAMPLE ITEMS / EQUIPMENT
+-- =============================================================
+INSERT INTO items (name, category, quantity_available, is_active) VALUES
+('LCD Projector',           'Equipment',   5,  1),
+('Laptop',                  'Equipment',  10,  1),
+('Wireless Microphone',     'Equipment',   8,  1),
+('Extension Cord (10m)',    'Equipment',  15,  1),
+('Portable Speaker System', 'Equipment',   3,  1),
+('Whiteboard Markers Set',  'Supplies',   20,  1),
+('Folding Tables',          'Furniture',  30,  1),
+('Monobloc Chairs',         'Furniture', 200,  1);
 
-      const cal = new FullCalendar.Calendar(el, {
-        initialView: 'dayGridMonth',
-        height: 310,
-        headerToolbar: { left: 'prev,next', center: 'title', right: '' },
-        dayMaxEvents: 2,
-        fixedWeekCount: false,
-        events: (info, success, failure) => {
-          fetch(feedUrl, {headers:{'Accept':'application/json'}})
-            .then(r => r.json())
-            .then(success)
-            .catch(failure);
-        }
-      });
-      cal.render();
-      return cal;
-    }
-
-    const facCal = buildMiniCalendar('miniFacilityCalendar', 'get_facility_events.php');
-    const itemCal = buildMiniCalendar('miniItemCalendar', 'get_item_events.php');
-
-    setInterval(() => {
-      facCal?.refetchEvents();
-      itemCal?.refetchEvents();
-    }, 30000);
-  })();
-</script>
-
-<?php require_once __DIR__ . '/includes/footer.php'; ?>
+SET FOREIGN_KEY_CHECKS = 1;

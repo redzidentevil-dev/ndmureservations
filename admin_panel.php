@@ -5,116 +5,129 @@ require_once __DIR__ . '/includes/db.php';
 require_once __DIR__ . '/includes/functions.php';
 
 enforceCorrectDashboard('admin');
+$me = getCurrentUser();
 $flash = getFlash();
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    requireValidCsrfOrDie();
-    $action = sanitizeInput($_POST['action'] ?? '');
-    try {
-        if ($action === 'mark_read') {
-            $id = (int)($_POST['id'] ?? 0);
-            $stmt = $pdo->prepare('UPDATE contact_messages SET is_read = 1 WHERE id = ?');
-            $stmt->execute([$id]);
-            redirectWithMessage('admin_messages.php', 'success', 'Marked as read.');
-        }
-        if ($action === 'reply') {
-            $id = (int)($_POST['id'] ?? 0);
-            $reply = sanitizeInput($_POST['reply'] ?? '');
-            if ($reply === '') redirectWithMessage('admin_messages.php', 'danger', 'Reply message is required.');
-            $stmt = $pdo->prepare('SELECT email, subject FROM contact_messages WHERE id = ?');
-            $stmt->execute([$id]);
-            $m = $stmt->fetch();
-            if (!$m) redirectWithMessage('admin_messages.php', 'danger', 'Message not found.');
-            @mail((string)$m['email'], 'Re: ' . (string)$m['subject'], $reply);
-            $stmt = $pdo->prepare('UPDATE contact_messages SET is_read = 1, replied_at = NOW() WHERE id = ?');
-            $stmt->execute([$id]);
-            redirectWithMessage('admin_messages.php', 'success', 'Reply sent (best effort).');
-        }
-    } catch (Throwable) {
-        redirectWithMessage('admin_messages.php', 'danger', 'Action failed.');
-    }
-}
-
-$rows = [];
+$stats = ['users'=>0,'facilities'=>0,'items'=>0,'facility_bookings'=>0,'item_bookings'=>0];
 try {
-    $rows = $pdo->query('SELECT * FROM contact_messages ORDER BY created_at DESC, id DESC')->fetchAll();
+    $stats['users'] = (int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+    $stats['facilities'] = (int)$pdo->query('SELECT COUNT(*) FROM facilities')->fetchColumn();
+    $stats['items'] = (int)$pdo->query('SELECT COUNT(*) FROM items')->fetchColumn();
+    $stats['facility_bookings'] = (int)$pdo->query('SELECT COUNT(*) FROM facility_bookings')->fetchColumn();
+    $stats['item_bookings'] = (int)$pdo->query('SELECT COUNT(*) FROM item_bookings')->fetchColumn();
 } catch (Throwable) {}
 ?>
 <?php require_once __DIR__ . '/includes/header.php'; ?>
 <?php require_once __DIR__ . '/includes/navbar.php'; ?>
 <?php require_once __DIR__ . '/includes/admin_sidebar.php'; ?>
 
-<h1 class="h4 fw-bold mb-3">Contact Messages</h1>
+<!-- Mobile sidebar toggle -->
+<div class="d-lg-none mb-3">
+  <button class="btn btn-sm btn-outline-secondary" data-toggle-sidebar>
+    <i class="fa-solid fa-bars me-1"></i>Menu
+  </button>
+</div>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <div class="d-flex align-items-center gap-2 mb-1">
+      <img src="assets/images/ndmulogo.png" alt="NDMU" width="32" height="32" style="object-fit:contain">
+      <h1 class="h4 fw-bold mb-0">Admin Dashboard</h1>
+    </div>
+    <div class="text-muted small">Welcome back, <?= e((string)$me['name']) ?></div>
+  </div>
+</div>
 
 <?php if ($flash): ?>
   <div class="alert alert-<?= e($flash['type']) ?>"><?= e($flash['message']) ?></div>
 <?php endif; ?>
 
-<div class="card shadow-sm">
-  <div class="card-body p-4">
-    <div class="table-responsive">
-      <table class="table align-middle">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>From</th>
-            <th>Email</th>
-            <th>Subject</th>
-            <th>Received</th>
-            <th>Read</th>
-            <th class="text-end">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <?php foreach ($rows as $r): ?>
-            <tr class="<?= (int)$r['is_read'] === 0 ? 'unread-highlight' : '' ?>">
-              <td><?= (int)$r['id'] ?></td>
-              <td><?= e((string)$r['name']) ?></td>
-              <td><?= e((string)$r['email']) ?></td>
-              <td><?= e((string)$r['subject']) ?></td>
-              <td class="small"><?= e(formatDateTime((string)$r['created_at'])) ?></td>
-              <td><?= (int)$r['is_read'] === 1 ? '<span class="badge bg-success">Yes</span>' : '<span class="badge bg-warning text-dark">No</span>' ?></td>
-              <td class="text-end">
-                <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#view<?= (int)$r['id'] ?>">View</button>
-                <form method="post" class="d-inline">
-                  <input type="hidden" name="csrf_token" value="<?= e(generateCsrfToken()) ?>">
-                  <input type="hidden" name="action" value="mark_read">
-                  <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                  <button class="btn btn-sm btn-outline-primary">Mark Read</button>
-                </form>
+<div class="row g-3 fade-up">
+  <div class="col-md-4">
+    <div class="card stat-card card-lift">
+      <div class="card-body">
+        <div class="d-flex align-items-center gap-3">
+          <div class="card-icon icon-navy">
+            <i class="fa-solid fa-users"></i>
+          </div>
+          <div>
+            <div class="stat-label">Users</div>
+            <div class="stat-value" data-count="<?= (int)$stats['users'] ?>"><?= (int)$stats['users'] ?></div>
+          </div>
+        </div>
+        <a href="admin_users.php" class="small fw-semibold d-block mt-2" style="color:var(--ndmu-gold);">Manage users &rarr;</a>
+      </div>
+    </div>
+  </div>
 
-                <div class="modal fade" id="view<?= (int)$r['id'] ?>" tabindex="-1" aria-hidden="true">
-                  <div class="modal-dialog modal-lg modal-dialog-centered">
-                    <div class="modal-content">
-                      <div class="modal-header">
-                        <h5 class="modal-title"><?= e((string)$r['subject']) ?></h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                      </div>
-                      <div class="modal-body">
-                        <div class="mb-2"><b>From:</b> <?= e((string)$r['name']) ?> (<?= e((string)$r['email']) ?>)</div>
-                        <div class="mb-3"><b>Message:</b><br><?= nl2br(e((string)$r['message'])) ?></div>
-                        <hr>
-                        <form method="post">
-                          <input type="hidden" name="csrf_token" value="<?= e(generateCsrfToken()) ?>">
-                          <input type="hidden" name="action" value="reply">
-                          <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                          <label class="form-label">Reply (sent via mail())</label>
-                          <textarea class="form-control" name="reply" rows="4" required></textarea>
-                          <button class="btn btn-warning mt-3 fw-semibold">Send Reply</button>
-                        </form>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </td>
-            </tr>
-          <?php endforeach; ?>
-        </tbody>
-      </table>
+  <div class="col-md-4">
+    <div class="card stat-card card-lift">
+      <div class="card-body">
+        <div class="d-flex align-items-center gap-3">
+          <div class="card-icon icon-emerald">
+            <i class="fa-solid fa-building"></i>
+          </div>
+          <div>
+            <div class="stat-label">Facilities</div>
+            <div class="stat-value" data-count="<?= (int)$stats['facilities'] ?>"><?= (int)$stats['facilities'] ?></div>
+          </div>
+        </div>
+        <a href="admin_facilities.php" class="small fw-semibold d-block mt-2" style="color:var(--ndmu-gold);">Manage facilities &rarr;</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-4">
+    <div class="card stat-card card-lift">
+      <div class="card-body">
+        <div class="d-flex align-items-center gap-3">
+          <div class="card-icon icon-info">
+            <i class="fa-solid fa-box-open"></i>
+          </div>
+          <div>
+            <div class="stat-label">Items</div>
+            <div class="stat-value" data-count="<?= (int)$stats['items'] ?>"><?= (int)$stats['items'] ?></div>
+          </div>
+        </div>
+        <a href="admin_items.php" class="small fw-semibold d-block mt-2" style="color:var(--ndmu-gold);">Manage items &rarr;</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-6">
+    <div class="card stat-card card-lift">
+      <div class="card-body">
+        <div class="d-flex align-items-center gap-3">
+          <div class="card-icon icon-gold">
+            <i class="fa-regular fa-calendar-days"></i>
+          </div>
+          <div>
+            <div class="stat-label">Facility Bookings</div>
+            <div class="stat-value" data-count="<?= (int)$stats['facility_bookings'] ?>"><?= (int)$stats['facility_bookings'] ?></div>
+          </div>
+        </div>
+        <a href="admin_bookings.php" class="small fw-semibold d-block mt-2" style="color:var(--ndmu-gold);">View bookings &rarr;</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-6">
+    <div class="card stat-card card-lift">
+      <div class="card-body">
+        <div class="d-flex align-items-center gap-3">
+          <div class="card-icon icon-danger">
+            <i class="fa-solid fa-boxes-stacked"></i>
+          </div>
+          <div>
+            <div class="stat-label">Item Bookings</div>
+            <div class="stat-value" data-count="<?= (int)$stats['item_bookings'] ?>"><?= (int)$stats['item_bookings'] ?></div>
+          </div>
+        </div>
+        <a href="admin_bookings.php" class="small fw-semibold d-block mt-2" style="color:var(--ndmu-gold);">View bookings &rarr;</a>
+      </div>
     </div>
   </div>
 </div>
 
 <?php require_once __DIR__ . '/includes/admin_sidebar_end.php'; ?>
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
-

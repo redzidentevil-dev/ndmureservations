@@ -4,20 +4,15 @@ require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/db.php';
 require_once __DIR__ . '/includes/functions.php';
 
-requireLogin();
-$user = getCurrentUser();
-$flash = getFlash();
-
-$stmt = $pdo->prepare('SELECT id, full_name, email, phone, department, student_id, role, profile_photo, password_hash FROM users WHERE id = ?');
-$stmt->execute([(int)$user['id']]);
-$dbUser = $stmt->fetch();
-if (!$dbUser) {
-    session_unset();
-    session_destroy();
-    redirectWithMessage('login.php', 'danger', 'Account not found.');
+if (isLoggedIn()) {
+    header('Location: ' . roleRedirectTarget((string)($_SESSION['user']['role'] ?? '')));
+    exit;
 }
 
-// NDMU Colleges and Departments (same list as register.php)
+$flash = getFlash();
+$error = null;
+
+// NDMU Colleges and Departments
 $ndmuDepartments = [
     'College of Arts and Sciences' => [
         'Bachelor of Arts in Communication',
@@ -79,249 +74,154 @@ $ndmuDepartments = [
         'Academic Track - GAS',
         'TVL Track',
     ],
-    'Administration / Non-Academic' => [
-        'Office of the President',
-        'Office of the VP for Administration',
-        'Office of the VP for Academics',
-        'Office of the AVP for Admin',
-        'Dean\'s Office',
-        'Director of Student Affairs (DSA)',
-        'Physical Plant and Security Services (PPSS)',
-        'Registrar\'s Office',
-        'Finance Office',
-        'Human Resources Office',
-        'Information Technology Office',
-        'Library',
-        'Guidance and Counseling Center',
-        'Campus Ministry',
-        'Athletics',
-    ],
 ];
-
-$error   = null;
-$success = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     requireValidCsrfOrDie();
 
-    if (!empty($_POST['action']) && $_POST['action'] === 'update_profile') {
-        $name       = sanitizeInput($_POST['full_name'] ?? '');
-        $phone      = sanitizeInput($_POST['phone'] ?? '');
-        $department = sanitizeInput($_POST['department'] ?? '');
-        $studentId  = sanitizeInput($_POST['student_id'] ?? '');
+    $fullName   = sanitizeInput($_POST['full_name'] ?? '');
+    $email      = sanitizeInput($_POST['email'] ?? '');
+    $password   = (string)($_POST['password'] ?? '');
+    $confirm    = (string)($_POST['confirm_password'] ?? '');
+    $studentId  = sanitizeInput($_POST['student_id'] ?? '');
+    $department = sanitizeInput($_POST['department'] ?? '');
+    $phone      = sanitizeInput($_POST['phone'] ?? '');
 
-        // Validate department against allowed list
-        $allDepts = [];
-        foreach ($ndmuDepartments as $college => $depts) {
-            foreach ($depts as $d) {
-                $allDepts[] = $d;
-            }
-        }
-
-        if ($name === '' || $phone === '' || $department === '' || $studentId === '') {
-            $error = 'Please complete all profile fields.';
-        } elseif (!in_array($department, $allDepts, true)) {
-            $error = 'Please select a valid department.';
-        } else {
-            $photoPath = (string)($dbUser['profile_photo'] ?? '');
-            if (!empty($_FILES['profile_photo']['name'])) {
-                $file = $_FILES['profile_photo'];
-                if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
-                    $error = 'Photo upload failed.';
-                } else {
-                    $size = (int)($file['size'] ?? 0);
-                    if ($size > (2 * 1024 * 1024)) {
-                        $error = 'Profile photo must be under 2MB.';
-                    } else {
-                        $tmp   = (string)($file['tmp_name'] ?? '');
-                        $finfo = finfo_open(FILEINFO_MIME_TYPE);
-                        $mime  = $finfo ? finfo_file($finfo, $tmp) : '';
-                        if ($finfo) finfo_close($finfo);
-                        $ext = match ($mime) {
-                            'image/jpeg' => 'jpg',
-                            'image/png'  => 'png',
-                            default      => null
-                        };
-                        if (!$ext) {
-                            $error = 'Only JPG/PNG images are allowed.';
-                        } else {
-                            $baseName = 'u' . (int)$dbUser['id'] . '_' . bin2hex(random_bytes(8)) . '.' . $ext;
-                            $destRel  = 'uploads/profile_photos/' . $baseName;
-                            $destAbs  = __DIR__ . '/' . $destRel;
-                            if (!move_uploaded_file($tmp, $destAbs)) {
-                                $error = 'Unable to save uploaded photo.';
-                            } else {
-                                $photoPath = $destRel;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!$error) {
-                $stmt = $pdo->prepare('UPDATE users SET full_name=?, phone=?, department=?, student_id=?, profile_photo=? WHERE id=?');
-                $stmt->execute([$name, $phone, $department, $studentId, $photoPath, (int)$dbUser['id']]);
-                $_SESSION['user']['name'] = $name;
-                $success = 'Profile updated successfully.';
-            }
+    $allDepts = [];
+    foreach ($ndmuDepartments as $college => $depts) {
+        $allDepts[] = $college;
+        foreach ($depts as $d) {
+            $allDepts[] = $d;
         }
     }
 
-    if (!empty($_POST['action']) && $_POST['action'] === 'change_password') {
-        $current = (string)($_POST['current_password'] ?? '');
-        $new     = (string)($_POST['new_password'] ?? '');
-        $confirm = (string)($_POST['confirm_new_password'] ?? '');
-
-        if ($current === '' || $new === '' || $confirm === '') {
-            $error = 'Please complete all password fields.';
-        } elseif (!password_verify($current, (string)$dbUser['password_hash'])) {
-            $error = 'Current password is incorrect.';
-        } elseif (strlen($new) < 8) {
-            $error = 'New password must be at least 8 characters.';
-        } elseif ($new !== $confirm) {
-            $error = 'New passwords do not match.';
+    if ($fullName === '' || $email === '' || $password === '' || $confirm === '' || $studentId === '' || $department === '' || $phone === '') {
+        $error = 'Please complete all fields.';
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $error = 'Please enter a valid email.';
+    } elseif (!in_array($department, $allDepts, true)) {
+        $error = 'Please select a valid department.';
+    } elseif (!preg_match('/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/', $password)) {
+        $error = 'Password must be at least 8 characters and include an uppercase letter, lowercase letter, number, and symbol.';
+    } elseif ($password !== $confirm) {
+        $error = 'Passwords do not match.';
+    } else {
+        $stmt = $pdo->prepare('SELECT COUNT(*) FROM users WHERE email = ?');
+        $stmt->execute([$email]);
+        if ((int)$stmt->fetchColumn() > 0) {
+            $error = 'That email is already registered.';
         } else {
-            $hash = password_hash($new, PASSWORD_BCRYPT);
-            $stmt = $pdo->prepare('UPDATE users SET password_hash=? WHERE id=?');
-            $stmt->execute([$hash, (int)$dbUser['id']]);
-            $success = 'Password updated successfully.';
+            $hash = password_hash($password, PASSWORD_BCRYPT);
+            $stmt = $pdo->prepare('INSERT INTO users (full_name, email, password_hash, student_id, department, phone, role, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW())');
+            $stmt->execute([$fullName, $email, $hash, $studentId, $department, $phone, 'student']);
+            redirectWithMessage('login.php', 'success', 'Registration successful. Please sign in.');
         }
     }
-
-    // Refresh from DB
-    $stmt = $pdo->prepare('SELECT id, full_name, email, phone, department, student_id, role, profile_photo, password_hash FROM users WHERE id = ?');
-    $stmt->execute([(int)$user['id']]);
-    $dbUser = $stmt->fetch();
 }
-
-$photo    = (string)($dbUser['profile_photo'] ?? '');
-$photoSrc = $photo !== '' ? $photo : 'assets/images/ndmulogo.png';
-
-// Role label helper
-$roleLabels = [
-    'student'       => 'Student',
-    'adviser'       => 'Adviser',
-    'staff'         => 'Staff',
-    'dsa_director'  => 'DSA Director',
-    'ppss_director' => 'PPSS Director',
-    'dean'          => 'Dean',
-    'avp_admin'     => 'AVP Admin',
-    'vp_admin'      => 'VP Admin',
-    'president'     => 'President',
-    'admin'         => 'Admin',
-    'janitor'       => 'Janitor',
-    'security'      => 'Security',
-];
-$roleLabel = $roleLabels[(string)$dbUser['role']] ?? ucfirst((string)$dbUser['role']);
 ?>
 <?php require_once __DIR__ . '/includes/header.php'; ?>
-<?php require_once __DIR__ . '/includes/navbar.php'; ?>
 
-<div class="container py-4">
-  <?php if ($flash): ?>
-    <div class="alert alert-<?= e($flash['type']) ?>"><?= e($flash['message']) ?></div>
-  <?php endif; ?>
-  <?php if ($error): ?>
-    <div class="alert alert-danger"><?= e($error) ?></div>
-  <?php endif; ?>
-  <?php if ($success): ?>
-    <div class="alert alert-success"><?= e($success) ?></div>
-  <?php endif; ?>
-
-  <div class="row g-4">
-    <div class="col-lg-4">
-      <div class="card shadow-sm">
-        <div class="card-body text-center">
-          <img src="<?= e($photoSrc) ?>" alt="Profile" width="140" height="140" class="rounded-circle border" style="object-fit:cover">
-          <div class="mt-3 fw-bold fs-5"><?= e((string)$dbUser['full_name']) ?></div>
-          <div class="text-muted"><?= e((string)$dbUser['email']) ?></div>
-          <div class="mt-2">
-            <span class="badge bg-primary"><?= e($roleLabel) ?></span>
-          </div>
-          <?php if ((string)$dbUser['role'] === 'student'): ?>
-            <div class="text-muted small mt-2">Contact an administrator to update your role.</div>
-          <?php endif; ?>
-        </div>
+<div class="container-fluid auth-page" style="background-image:url('assets/images/ndmubgp.jpg')">
+  <div class="row min-vh-100">
+    <!-- Left visual panel -->
+    <div class="col-lg-5 d-none d-lg-flex ndmu-split-left align-items-end" style="background-image:url('assets/images/ndmubgp.jpg')">
+      <div class="p-5" style="position:relative; z-index:5; background:linear-gradient(0deg, rgba(0,0,0,0.45) 0%, transparent 80%);">
+        <h2 class="fw-bold mb-2" style="color:#ffffff !important; text-shadow:0 2px 10px rgba(0,0,0,0.7); font-size:1.75rem;">Create your account</h2>
+        <p class="mb-0" style="color:#ffffff !important; opacity:0.85; text-shadow:0 1px 6px rgba(0,0,0,0.6);">Use your official NDMU email for faster verification.</p>
       </div>
     </div>
 
-    <div class="col-lg-8">
-      <div class="card shadow-sm mb-4">
-        <div class="card-body">
-          <h2 class="h5 fw-semibold mb-3">Edit Profile</h2>
-          <form method="post" enctype="multipart/form-data">
-            <input type="hidden" name="csrf_token" value="<?= e(generateCsrfToken()) ?>">
-            <input type="hidden" name="action" value="update_profile">
-            <div class="row g-3">
-              <div class="col-md-6">
-                <label class="form-label">Name</label>
-                <input class="form-control" name="full_name" required value="<?= e((string)$dbUser['full_name']) ?>">
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">Phone</label>
-                <input class="form-control" name="phone" required value="<?= e((string)($dbUser['phone'] ?? '')) ?>">
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">Student / Employee ID</label>
-                <input class="form-control" name="student_id" required value="<?= e((string)($dbUser['student_id'] ?? '')) ?>">
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">College / Department</label>
-                <select class="form-select" name="department" required>
-                  <option value="" disabled <?= empty($dbUser['department']) ? 'selected' : '' ?>>— Select —</option>
-                  <?php foreach ($ndmuDepartments as $college => $depts): ?>
-                    <optgroup label="<?= e($college) ?>">
-                      <?php foreach ($depts as $dept): ?>
-                        <option value="<?= e($dept) ?>" <?= ((string)($dbUser['department'] ?? '') === $dept) ? 'selected' : '' ?>>
-                          <?= e($dept) ?>
-                        </option>
-                      <?php endforeach; ?>
-                    </optgroup>
-                  <?php endforeach; ?>
-                </select>
-              </div>
-              <div class="col-12">
-                <label class="form-label">Profile Photo <span class="text-muted">(JPG/PNG, &lt; 2MB)</span></label>
-                <input class="form-control" type="file" name="profile_photo" accept="image/jpeg,image/png">
-              </div>
-            </div>
-            <button class="btn btn-warning mt-3 fw-semibold">Save Changes</button>
-          </form>
-        </div>
-      </div>
+    <!-- Right form panel -->
+    <div class="col-lg-7 auth-form-side">
+      <div class="auth-form-wrapper" style="max-width:620px;">
+        <a href="index.php" class="d-inline-flex align-items-center gap-1 text-muted small mb-3 text-decoration-none" style="transition:color 0.2s;">
+          <i class="fa-solid fa-arrow-left"></i> Back to Home
+        </a>
+        <?php if ($flash): ?>
+          <div class="alert alert-<?= e($flash['type']) ?>"><?= e($flash['message']) ?></div>
+        <?php endif; ?>
+        <?php if ($error): ?>
+          <div class="alert alert-danger"><?= e($error) ?></div>
+        <?php endif; ?>
 
-      <div class="card shadow-sm">
-        <div class="card-body">
-          <h2 class="h5 fw-semibold mb-3">Change Password</h2>
-          <form method="post">
-            <input type="hidden" name="csrf_token" value="<?= e(generateCsrfToken()) ?>">
-            <input type="hidden" name="action" value="change_password">
-            <div class="row g-3">
-              <div class="col-md-4">
-                <label class="form-label">Current Password</label>
-                <div class="input-group">
-                  <input id="curPwd" class="form-control" type="password" name="current_password" required>
-                  <button class="btn btn-outline-secondary" type="button" data-toggle-password="#curPwd"><i class="fa-solid fa-eye"></i></button>
-                </div>
-              </div>
-              <div class="col-md-4">
-                <label class="form-label">New Password</label>
-                <div class="input-group">
-                  <input id="newPwd" class="form-control" type="password" name="new_password" required>
-                  <button class="btn btn-outline-secondary" type="button" data-toggle-password="#newPwd"><i class="fa-solid fa-eye"></i></button>
-                </div>
-              </div>
-              <div class="col-md-4">
-                <label class="form-label">Confirm New Password</label>
-                <div class="input-group">
-                  <input id="newPwdC" class="form-control" type="password" name="confirm_new_password" required>
-                  <button class="btn btn-outline-secondary" type="button" data-toggle-password="#newPwdC"><i class="fa-solid fa-eye"></i></button>
-                </div>
+        <div class="d-flex align-items-center gap-3 mb-4 fade-up">
+          <img src="assets/images/ndmulogo.png" alt="NDMU" width="52" height="52" style="object-fit:contain">
+          <div>
+            <div class="fw-bold fs-5" style="color:var(--ndmu-navy);">Register</div>
+            <div class="text-muted small">Join the NDMU Facility Booking System</div>
+          </div>
+        </div>
+
+        <form method="post" class="fade-up fade-up-delay-1">
+          <input type="hidden" name="csrf_token" value="<?= e(generateCsrfToken()) ?>">
+
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label">Full Name</label>
+              <input class="form-control" name="full_name" required value="<?= e($_POST['full_name'] ?? '') ?>" placeholder="Juan Dela Cruz">
+            </div>
+            <div class="col-12">
+              <label class="form-label">Email</label>
+              <input class="form-control" type="email" name="email" required value="<?= e($_POST['email'] ?? '') ?>" placeholder="you@ndmu.edu.ph">
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Password</label>
+              <div class="input-group">
+                <input id="regPwd" class="form-control" type="password" name="password" required placeholder="Min. 8 characters">
+                <button class="btn btn-outline-secondary" type="button" data-toggle-password="#regPwd" aria-label="Show/Hide password">
+                  <i class="fa-solid fa-eye"></i>
+                </button>
               </div>
             </div>
-            <button class="btn btn-outline-primary mt-3 fw-semibold">Update Password</button>
-          </form>
-        </div>
+            <div class="col-md-6">
+              <label class="form-label">Confirm Password</label>
+              <div class="input-group">
+                <input id="regPwd2" class="form-control" type="password" name="confirm_password" required placeholder="Re-enter password">
+                <button class="btn btn-outline-secondary" type="button" data-toggle-password="#regPwd2" aria-label="Show/Hide password">
+                  <i class="fa-solid fa-eye"></i>
+                </button>
+              </div>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Student / Employee ID</label>
+              <input class="form-control" name="student_id" required value="<?= e($_POST['student_id'] ?? '') ?>" placeholder="e.g. 2024-00123">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Phone</label>
+              <input class="form-control" name="phone" required value="<?= e($_POST['phone'] ?? '') ?>" placeholder="09XX XXX XXXX">
+            </div>
+
+            <div class="col-12">
+              <label class="form-label">College / Department</label>
+              <select class="form-select" name="department" required>
+                <option value="" disabled <?= empty($_POST['department']) ? 'selected' : '' ?>>Select your college/department</option>
+                <?php foreach ($ndmuDepartments as $college => $depts): ?>
+                  <optgroup label="<?= e($college) ?>">
+                    <?php foreach ($depts as $dept): ?>
+                      <option value="<?= e($dept) ?>" <?= (($_POST['department'] ?? '') === $dept) ? 'selected' : '' ?>>
+                        <?= e($dept) ?>
+                      </option>
+                    <?php endforeach; ?>
+                  </optgroup>
+                <?php endforeach; ?>
+              </select>
+            </div>
+          </div>
+
+          <div class="alert alert-info small mt-3 mb-0 py-2">
+            <i class="fa-solid fa-circle-info me-1"></i>
+            All new accounts are registered as <strong>Student</strong> by default. An administrator can assign your specific role after registration.
+          </div>
+
+          <div class="d-flex gap-2 mt-4">
+            <button class="btn btn-warning fw-semibold">
+              Create Account <i class="fa-solid fa-arrow-right ms-1"></i>
+            </button>
+            <a class="btn btn-outline-secondary" href="login.php">Back to Sign In</a>
+          </div>
+        </form>
       </div>
     </div>
   </div>

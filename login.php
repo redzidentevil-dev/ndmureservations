@@ -4,159 +4,135 @@ require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/db.php';
 require_once __DIR__ . '/includes/functions.php';
 
-enforceCorrectDashboard('janitor');
-$me = getCurrentUser();
+if (isLoggedIn()) {
+    header('Location: ' . roleRedirectTarget((string)($_SESSION['user']['role'] ?? '')));
+    exit;
+}
+
 $flash = getFlash();
+$error = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     requireValidCsrfOrDie();
-    $id = (int)($_POST['alert_id'] ?? 0);
-    $action = sanitizeInput($_POST['action'] ?? '');
-    if ($id > 0 && in_array($action, ['in_progress','resolved'], true)) {
-        try {
-            $stmt = $pdo->prepare('UPDATE maintenance_alerts SET status = ? WHERE id = ? AND assigned_to_role = ?');
-            $stmt->execute([$action, $id, 'janitor']);
-            redirectWithMessage('janitor_dashboard.php', 'success', 'Alert updated.');
-        } catch (Throwable) {
-            redirectWithMessage('janitor_dashboard.php', 'danger', 'Unable to update alert.');
+
+    $email    = sanitizeInput($_POST['email'] ?? '');
+    $password = (string)($_POST['password'] ?? '');
+    $remember = !empty($_POST['remember']);
+
+    if ($email === '' || $password === '') {
+        $error = 'Please fill in all fields.';
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $error = 'Please enter a valid email address.';
+    } else {
+        $stmt = $pdo->prepare('SELECT id, full_name, email, role, password_hash, is_active FROM users WHERE email = ? LIMIT 1');
+        $stmt->execute([$email]);
+        $u = $stmt->fetch();
+
+        if (!$u || (isset($u['is_active']) && (int)$u['is_active'] === 0) || !password_verify($password, (string)$u['password_hash'])) {
+            $error = 'Invalid email or password.';
+        } else {
+            session_regenerate_id(true);
+            $_SESSION['user'] = [
+                'id'    => (int)$u['id'],
+                'name'  => (string)$u['full_name'],
+                'email' => (string)$u['email'],
+                'role'  => (string)$u['role'],
+            ];
+            $_SESSION['last_activity'] = time();
+
+            if ($remember) {
+                setcookie(session_name(), session_id(), [
+                    'expires'  => time() + 60 * 60 * 24 * 7,
+                    'path'     => '/',
+                    'httponly' => true,
+                    'samesite' => 'Strict',
+                ]);
+            }
+
+            header('Location: ' . roleRedirectTarget((string)$u['role']));
+            exit;
         }
     }
 }
-
-$alerts = [];
-try {
-    $stmt = $pdo->prepare(
-        "SELECT ma.*, f.name AS facility_name
-         FROM maintenance_alerts ma
-         JOIN facilities f ON f.id = ma.facility_id
-         WHERE ma.assigned_to_role = 'janitor' AND ma.status IN ('open','in_progress')
-         ORDER BY ma.severity DESC, ma.date_start ASC"
-    );
-    $stmt->execute();
-    $alerts = $stmt->fetchAll();
-} catch (Throwable) {}
-
-$upcoming = [];
-try {
-    $stmt = $pdo->query(
-        "SELECT fb.id, fb.date_start, fb.date_end, fb.time_start, fb.time_end, f.name AS facility_name
-         FROM facility_bookings fb
-         JOIN facilities f ON f.id = fb.facility_id
-         WHERE fb.status = 'fully_approved'
-           AND fb.date_start <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
-           AND fb.date_end >= CURDATE()
-         ORDER BY fb.date_start ASC, fb.time_start ASC"
-    );
-    $upcoming = $stmt->fetchAll();
-} catch (Throwable) {}
-
-function sevBadge(string $sev): string {
-    $c = match ($sev) { 'high' => 'danger', 'medium' => 'warning', 'low' => 'success', default => 'secondary' };
-    return '<span class="badge bg-' . e($c) . '">' . e(ucfirst($sev)) . '</span>';
-}
 ?>
 <?php require_once __DIR__ . '/includes/header.php'; ?>
-<?php require_once __DIR__ . '/includes/navbar.php'; ?>
 
-<div class="banner text-white mb-4" style="background-image:url('assets/images/ndmubg.jpg')">
-  <div class="banner-content container py-4">
-    <div class="d-flex align-items-center gap-3">
-      <img src="assets/images/ndmulogo.png" alt="NDMU" width="54" height="54" style="object-fit:contain">
-      <div>
-        <div class="h4 fw-bold mb-1">Janitor Dashboard</div>
-        <div class="text-white-50">Logged in as <?= e((string)$me['name']) ?></div>
+<div class="container-fluid auth-page" style="background-image:url('assets/images/ndmubgp.jpg')">
+  <div class="row min-vh-100">
+    <!-- Left visual panel (desktop only) -->
+    <div class="col-lg-6 d-none d-lg-flex ndmu-split-left align-items-end" style="background-image:url('assets/images/ndmubgp.jpg')">
+      <div class="p-5" style="position:relative; z-index:5; background:linear-gradient(0deg, rgba(0,0,0,0.45) 0%, transparent 80%);">
+        <h2 class="fw-bold mb-2" style="color:#ffffff !important; text-shadow:0 2px 10px rgba(0,0,0,0.7); font-size:1.75rem;">Notre Dame of Marbel University</h2>
+        <p class="h5 mb-0" style="color:#ffffff !important; opacity:0.85; text-shadow:0 1px 6px rgba(0,0,0,0.6);">Facility Booking System</p>
+      </div>
+    </div>
+
+    <!-- Right form panel -->
+    <div class="col-lg-6 auth-form-side">
+      <div class="auth-form-wrapper">
+        <a href="index.php" class="d-inline-flex align-items-center gap-1 text-muted small mb-3 text-decoration-none" style="transition:color 0.2s;">
+          <i class="fa-solid fa-arrow-left"></i> Back to Home
+        </a>
+        <?php if ($flash): ?>
+          <div class="alert alert-<?= e($flash['type']) ?> fade-up"><?= e($flash['message']) ?></div>
+        <?php endif; ?>
+        <?php if ($error): ?>
+          <div class="alert alert-danger fade-up"><?= e($error) ?></div>
+        <?php endif; ?>
+
+        <div class="d-flex align-items-center gap-3 mb-4 fade-up">
+          <img src="assets/images/ndmulogo.png" alt="NDMU" width="52" height="52" style="object-fit:contain">
+          <div>
+            <div class="fw-bold fs-5" style="color:var(--ndmu-navy);">Welcome back</div>
+            <div class="text-muted small">Sign in to your account</div>
+          </div>
+        </div>
+
+        <form method="post" class="fade-up fade-up-delay-1">
+          <input type="hidden" name="csrf_token" value="<?= e(generateCsrfToken()) ?>">
+
+          <div class="mb-3">
+            <label class="form-label">Email</label>
+            <input class="form-control form-control-lg" type="email" name="email" required
+                   value="<?= e($_POST['email'] ?? '') ?>" autocomplete="email"
+                   placeholder="you@ndmu.edu.ph">
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Password</label>
+            <div class="input-group">
+              <input id="loginPassword" class="form-control form-control-lg" type="password" name="password"
+                     required autocomplete="current-password" placeholder="Enter your password">
+              <button class="btn btn-outline-secondary" type="button" data-toggle-password="#loginPassword" aria-label="Show/Hide password">
+                <i class="fa-solid fa-eye"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="d-flex justify-content-between align-items-center mb-4">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="remember" id="rememberMe" <?= !empty($_POST['remember']) ? 'checked' : '' ?>>
+              <label class="form-check-label small" for="rememberMe">Remember me</label>
+            </div>
+            <a class="small fw-semibold" href="forgot_password.php" style="color:var(--ndmu-gold);">Forgot password?</a>
+          </div>
+
+          <button class="btn btn-warning btn-lg w-100 fw-semibold mb-3">
+            Sign In <i class="fa-solid fa-arrow-right ms-2"></i>
+          </button>
+
+          <div class="text-center">
+            <span class="text-muted small">Don't have an account?</span>
+            <a class="small fw-semibold" href="register.php" style="color:var(--ndmu-navy);">Create one</a>
+          </div>
+
+          <div class="text-muted small text-center mt-3" style="color:var(--ndmu-text-muted);">
+            You will be redirected to your assigned role's dashboard automatically.
+          </div>
+        </form>
       </div>
     </div>
   </div>
 </div>
 
-<div class="container pb-5">
-  <?php if ($flash): ?>
-    <div class="alert alert-<?= e($flash['type']) ?>"><?= e($flash['message']) ?></div>
-  <?php endif; ?>
-
-  <div class="card shadow-sm mb-4">
-    <div class="card-body p-4">
-      <h2 class="h5 fw-semibold mb-3">Maintenance Alerts</h2>
-      <?php if (!$alerts): ?>
-        <div class="alert alert-success mb-0">No open alerts assigned to Janitor.</div>
-      <?php else: ?>
-        <div class="table-responsive">
-          <table class="table align-middle">
-            <thead>
-              <tr>
-                <th>Facility</th>
-                <th>Title</th>
-                <th>Severity</th>
-                <th>Date Range</th>
-                <th>Status</th>
-                <th class="text-end">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php foreach ($alerts as $a): ?>
-                <tr>
-                  <td><?= e((string)$a['facility_name']) ?></td>
-                  <td><?= e((string)$a['title']) ?></td>
-                  <td><?= sevBadge((string)$a['severity']) ?></td>
-                  <td class="small"><?= e((string)$a['date_start']) ?> → <?= e((string)$a['date_end']) ?></td>
-                  <td><?= statusBadge((string)$a['status']) ?></td>
-                  <td class="text-end">
-                    <div class="d-flex justify-content-end gap-2 flex-wrap">
-                      <form method="post" class="d-inline">
-                        <input type="hidden" name="csrf_token" value="<?= e(generateCsrfToken()) ?>">
-                        <input type="hidden" name="alert_id" value="<?= (int)$a['id'] ?>">
-                        <input type="hidden" name="action" value="in_progress">
-                        <button class="btn btn-sm btn-outline-primary">Mark In Progress</button>
-                      </form>
-                      <form method="post" class="d-inline">
-                        <input type="hidden" name="csrf_token" value="<?= e(generateCsrfToken()) ?>">
-                        <input type="hidden" name="alert_id" value="<?= (int)$a['id'] ?>">
-                        <input type="hidden" name="action" value="resolved">
-                        <button class="btn btn-sm btn-success">Mark Resolved</button>
-                      </form>
-                    </div>
-                  </td>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-      <?php endif; ?>
-    </div>
-  </div>
-
-  <div class="card shadow-sm">
-    <div class="card-body p-4">
-      <h2 class="h5 fw-semibold mb-3">Today + Next 7 Days (Fully Approved)</h2>
-      <?php if (!$upcoming): ?>
-        <div class="text-muted">No fully approved bookings found for the next 7 days.</div>
-      <?php else: ?>
-        <?php
-          $byDate = [];
-          foreach ($upcoming as $u) {
-              $byDate[(string)$u['date_start']][] = $u;
-          }
-        ?>
-        <div class="row g-3">
-          <?php foreach ($byDate as $d => $list): ?>
-            <div class="col-md-6 col-lg-4">
-              <div class="border rounded p-3 h-100">
-                <div class="fw-semibold mb-2"><?= e($d) ?></div>
-                <?php foreach ($list as $u): ?>
-                  <div class="small mb-2">
-                    <div class="fw-semibold"><?= e((string)$u['facility_name']) ?></div>
-                    <div class="text-muted"><?= e((string)$u['time_start']) ?> → <?= e((string)$u['time_end']) ?></div>
-                  </div>
-                <?php endforeach; ?>
-              </div>
-            </div>
-          <?php endforeach; ?>
-        </div>
-      <?php endif; ?>
-    </div>
-  </div>
-</div>
-
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
-

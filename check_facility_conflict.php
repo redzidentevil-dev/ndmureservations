@@ -5,56 +5,52 @@ require_once __DIR__ . '/includes/db.php';
 require_once __DIR__ . '/includes/functions.php';
 
 requireLogin();
-requireValidCsrfOrDie();
+header('Content-Type: application/json; charset=utf-8');
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    redirectWithMessage('student_dashboard.php', 'danger', 'Invalid request.');
+    echo json_encode(['conflict' => false, 'message' => '']);
+    exit;
 }
 
-$user = getCurrentUser();
-$type = sanitizeInput($_POST['type'] ?? '');
-$id = (int)($_POST['id'] ?? 0);
-if ($id <= 0 || !in_array($type, ['facility','item'], true)) {
-    redirectWithMessage('student_dashboard.php', 'danger', 'Invalid request.');
+$ok = validateCsrfToken($_POST['csrf_token'] ?? null);
+if (!$ok) {
+    http_response_code(400);
+    echo json_encode(['conflict' => false, 'message' => 'Invalid request.']);
+    exit;
 }
+
+$facilityId = (int)($_POST['facility_id'] ?? 0);
+$dateStart = sanitizeInput($_POST['date_start'] ?? '');
+$dateEnd = sanitizeInput($_POST['date_end'] ?? '');
+$timeStart = sanitizeInput($_POST['time_start'] ?? '');
+$timeEnd = sanitizeInput($_POST['time_end'] ?? '');
+
+if ($facilityId <= 0 || $dateStart === '' || $dateEnd === '' || $timeStart === '' || $timeEnd === '') {
+    echo json_encode(['conflict' => false, 'message' => '']);
+    exit;
+}
+
+$newStart = "{$dateStart} {$timeStart}:00";
+$newEnd = "{$dateEnd} {$timeEnd}:00";
 
 try {
-    if ($type === 'facility') {
-        $stmt = $pdo->prepare('SELECT status FROM facility_bookings WHERE id = ? AND user_id = ?');
-        $stmt->execute([$id, (int)$user['id']]);
-        $status = (string)$stmt->fetchColumn();
-        if (!$status) redirectWithMessage('student_dashboard.php', 'danger', 'Booking not found.');
-        if (in_array($status, ['fully_approved','rejected'], true)) {
-            redirectWithMessage('student_dashboard.php', 'warning', 'This booking can no longer be cancelled.');
-        }
-        $stmt = $pdo->prepare("UPDATE facility_bookings SET status='cancelled', current_approval_role=NULL WHERE id=? AND user_id=?");
-        $stmt->execute([$id, (int)$user['id']]);
-        sendNotification($pdo, (int)$user['id'], 'Booking Cancelled', 'Your facility booking has been cancelled.', 'system', $id);
-        redirectWithMessage('student_dashboard.php', 'success', 'Facility booking cancelled.');
+    $stmt = $pdo->prepare(
+        "SELECT id, title, date_start, date_end, time_start, time_end
+         FROM facility_bookings
+         WHERE facility_id = ?
+           AND status NOT IN ('rejected','cancelled')
+           AND (CONCAT(date_start,' ',time_start) < ?)
+           AND (CONCAT(date_end,' ',time_end) > ?)
+         ORDER BY date_start ASC, time_start ASC
+         LIMIT 1"
+    );
+    $stmt->execute([$facilityId, $newEnd, $newStart]);
+    $row = $stmt->fetch();
+    if ($row) {
+        $msg = "Conflict with booking: " . (string)$row['title'] . " (" . (string)$row['date_start'] . " " . (string)$row['time_start'] . " - " . (string)$row['date_end'] . " " . (string)$row['time_end'] . ")";
+        echo json_encode(['conflict' => true, 'message' => $msg]);
+        exit;
     }
+} catch (Throwable) {}
 
-    if ($type === 'item') {
-        $stmt = $pdo->prepare('SELECT item_id, quantity_needed, status FROM item_bookings WHERE id = ? AND user_id = ?');
-        $stmt->execute([$id, (int)$user['id']]);
-        $b = $stmt->fetch();
-        if (!$b) redirectWithMessage('student_dashboard.php', 'danger', 'Request not found.');
-        $status = (string)$b['status'];
-        if (in_array($status, ['fully_approved','rejected'], true)) {
-            redirectWithMessage('student_dashboard.php', 'warning', 'This request can no longer be cancelled.');
-        }
-
-        $pdo->beginTransaction();
-        $stmt = $pdo->prepare("UPDATE item_bookings SET status='cancelled', current_approval_role=NULL WHERE id=? AND user_id=?");
-        $stmt->execute([$id, (int)$user['id']]);
-        $stmt = $pdo->prepare('UPDATE items SET quantity_available = quantity_available + ? WHERE id = ?');
-        $stmt->execute([(int)$b['quantity_needed'], (int)$b['item_id']]);
-        $pdo->commit();
-
-        sendNotification($pdo, (int)$user['id'], 'Request Cancelled', 'Your item borrowing request has been cancelled.', 'system', $id);
-        redirectWithMessage('student_dashboard.php', 'success', 'Item request cancelled and quantity restored.');
-    }
-} catch (Throwable) {
-    if ($pdo->inTransaction()) $pdo->rollBack();
-    redirectWithMessage('student_dashboard.php', 'danger', 'Unable to cancel right now.');
-}
-
+echo json_encode(['conflict' => false, 'message' => 'No conflict detected.']);

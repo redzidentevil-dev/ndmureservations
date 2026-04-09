@@ -1,88 +1,116 @@
 <?php
 declare(strict_types=1);
-require_once __DIR__ . '/auth.php';
-require_once __DIR__ . '/db.php';
 
-$user = getCurrentUser();
-$unreadCount = 0;
-if ($user) {
-    try {
-        $stmt = $pdo->prepare('SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0');
-        $stmt->execute([(int)$user['id']]);
-        $unreadCount = (int)$stmt->fetchColumn();
-    } catch (Throwable) {
-        $unreadCount = 0;
+require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/db.php';
+require_once __DIR__ . '/includes/functions.php';
+require_once __DIR__ . '/includes/smtp_mailer.php';
+
+if (isLoggedIn()) {
+    header('Location: ' . roleRedirectTarget((string)($_SESSION['user']['role'] ?? '')));
+    exit;
+}
+
+$flash   = getFlash();
+$error   = null;
+$success = null;
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    requireValidCsrfOrDie();
+
+    $email = sanitizeInput($_POST['email'] ?? '');
+
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $error = 'Please enter a valid email address.';
+    } else {
+        // Look up user by the email they typed
+        $stmt = $pdo->prepare('SELECT id, full_name, email FROM users WHERE email = ? LIMIT 1');
+        $stmt->execute([$email]);
+        $u = $stmt->fetch();
+
+        // Always show the same success message to prevent email enumeration
+        $success = 'If that email is registered, a password reset link has been sent to it.';
+
+        if ($u) {
+            // Generate a secure random token and a 1-hour expiry
+            $token   = bin2hex(random_bytes(32));
+            $expires = (new DateTime('+1 hour'))->format('Y-m-d H:i:s');
+
+            $stmt = $pdo->prepare(
+                'UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE id = ?'
+            );
+            $stmt->execute([$token, $expires, (int)$u['id']]);
+
+            // Build the reset URL dynamically so it works on any host / sub-path
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host   = $_SERVER['HTTP_HOST'] ?? 'localhost';
+            $base   = rtrim(dirname($_SERVER['PHP_SELF'] ?? '/'), '/\\');
+            $link   = "{$scheme}://{$host}{$base}/reset_password.php?token=" . urlencode($token);
+
+            // Send the reset link to the email address the user typed
+            $sent = sendPasswordResetEmail((string)$u['email'], (string)$u['full_name'], $link);
+
+            if (!$sent) {
+                // Log for admin but do NOT leak this to the user
+                error_log('Forgot-password: failed to send reset email to ' . $u['email']);
+            }
+        }
+
+        // Clear the submitted email so the field does not re-populate after success
+        $_POST['email'] = '';
     }
 }
 ?>
-<nav class="navbar navbar-expand-lg navbar-dark bg-ndmu-dark">
-  <div class="container">
-    <a class="navbar-brand d-flex align-items-center gap-2" href="<?= $user ? 'student_dashboard.php' : 'index.php' ?>">
-      <img src="assets/images/ndmulogo.png" alt="NDMU" width="28" height="28" style="object-fit:contain">
-      <span>NDMU Booking</span>
-    </a>
-    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#ndmuNav" aria-controls="ndmuNav" aria-expanded="false" aria-label="Toggle navigation">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div class="collapse navbar-collapse" id="ndmuNav">
-      <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-        <li class="nav-item"><a class="nav-link" href="index.php">Home</a></li>
-        <li class="nav-item"><a class="nav-link" href="faq.php">FAQ</a></li>
-        <li class="nav-item"><a class="nav-link" href="contact.php">Contact</a></li>
+<?php require_once __DIR__ . '/includes/header.php'; ?>
 
-        <?php if ($user): ?>
-          <?php if ((string)$user['role'] === 'admin'): ?>
-            <li class="nav-item"><a class="nav-link" href="admin_panel.php"><i class="fa-solid fa-screwdriver-wrench me-1"></i>Admin Panel</a></li>
-          <?php endif; ?>
+<div class="container py-5" style="max-width:520px;">
 
-          <li class="nav-item"><a class="nav-link" href="profile.php">Profile</a></li>
-          <li class="nav-item"><a class="nav-link" href="notifications.php">Notifications</a></li>
-        <?php endif; ?>
-      </ul>
-      <ul class="navbar-nav ms-auto align-items-lg-center gap-lg-2">
-        <?php if ($user): ?>
-          <li class="nav-item">
-            <a class="nav-link position-relative" href="notifications.php" aria-label="Notifications">
-              <i class="fa-solid fa-bell"></i>
-              <span id="notifBadge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="<?= $unreadCount ? '' : 'display:none;' ?>">
-                <?= (int)$unreadCount ?>
-              </span>
-            </a>
-          </li>
-          <li class="nav-item">
-            <span class="navbar-text small text-white-50"><?= e((string)$user['name']) ?></span>
-          </li>
-          <li class="nav-item">
-            <a class="btn btn-sm btn-outline-light" href="logout.php">Logout</a>
-          </li>
-        <?php else: ?>
-          <li class="nav-item"><a class="btn btn-sm btn-outline-light" href="login.php">Sign In</a></li>
-          <li class="nav-item"><a class="btn btn-sm btn-warning" href="register.php">Register</a></li>
-        <?php endif; ?>
-      </ul>
+  <?php if ($flash): ?>
+    <div class="alert alert-<?= e($flash['type']) ?>"><?= e($flash['message']) ?></div>
+  <?php endif; ?>
+
+  <?php if ($error): ?>
+    <div class="alert alert-danger"><?= e($error) ?></div>
+  <?php endif; ?>
+
+  <?php if ($success): ?>
+    <div class="alert alert-success"><?= e($success) ?></div>
+  <?php endif; ?>
+
+  <div class="text-center mb-4">
+    <img src="assets/images/ndmulogo.png" alt="NDMU" width="70" height="70"
+         style="object-fit:contain" class="mb-2">
+    <div class="fw-bold fs-4">Forgot Password</div>
+    <div class="text-muted">Enter your registered email to receive a reset link.</div>
+  </div>
+
+  <div class="card shadow-sm border-0">
+    <div class="card-body p-4">
+      <form method="post" novalidate>
+        <input type="hidden" name="csrf_token" value="<?= e(generateCsrfToken()) ?>">
+
+        <div class="mb-3">
+          <label for="email" class="form-label">Email address</label>
+          <input
+            id="email"
+            class="form-control"
+            type="email"
+            name="email"
+            required
+            autocomplete="email"
+            value="<?= e($_POST['email'] ?? '') ?>"
+            placeholder="you@example.com"
+          >
+        </div>
+
+        <button class="btn btn-warning w-100 fw-semibold">Send Reset Link</button>
+
+        <div class="text-center mt-3">
+          <a href="login.php">&larr; Back to Sign In</a>
+        </div>
+      </form>
     </div>
   </div>
-</nav>
+</div>
 
-<?php if ($user): ?>
-<script>
-  (function(){
-    const badge = document.getElementById('notifBadge');
-    async function refreshCount(){
-      try{
-        const res = await fetch('get_notification_count.php', {headers: {'Accept':'application/json'}});
-        if(!res.ok) return;
-        const data = await res.json();
-        const c = Number(data.count || 0);
-        if(c > 0){
-          badge.style.display = '';
-          badge.textContent = String(c);
-        }else{
-          badge.style.display = 'none';
-        }
-      }catch(e){}
-    }
-    setInterval(refreshCount, 30000);
-  })();
-</script>
-<?php endif; ?>
+<?php require_once __DIR__ . '/includes/footer.php'; ?>

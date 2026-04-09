@@ -8,49 +8,62 @@ requireLogin();
 header('Content-Type: application/json; charset=utf-8');
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    echo json_encode(['conflict' => false, 'message' => '']);
+    echo json_encode(['available' => true, 'message' => '']);
     exit;
 }
 
 $ok = validateCsrfToken($_POST['csrf_token'] ?? null);
 if (!$ok) {
     http_response_code(400);
-    echo json_encode(['conflict' => false, 'message' => 'Invalid request.']);
+    echo json_encode(['available' => false, 'message' => 'Invalid request.']);
     exit;
 }
 
-$facilityId = (int)($_POST['facility_id'] ?? 0);
-$dateStart = sanitizeInput($_POST['date_start'] ?? '');
-$dateEnd = sanitizeInput($_POST['date_end'] ?? '');
-$timeStart = sanitizeInput($_POST['time_start'] ?? '');
-$timeEnd = sanitizeInput($_POST['time_end'] ?? '');
+$itemId = (int)($_POST['item_id'] ?? 0);
+$qty = (int)($_POST['quantity_needed'] ?? 0);
+$borrowDate = sanitizeInput($_POST['borrow_date'] ?? '');
+$returnDate = sanitizeInput($_POST['return_date'] ?? '');
+$borrowTime = sanitizeInput($_POST['borrow_time'] ?? '');
+$returnTime = sanitizeInput($_POST['return_time'] ?? '');
 
-if ($facilityId <= 0 || $dateStart === '' || $dateEnd === '' || $timeStart === '' || $timeEnd === '') {
-    echo json_encode(['conflict' => false, 'message' => '']);
+if ($itemId <= 0 || $qty <= 0 || $borrowDate === '' || $returnDate === '' || $borrowTime === '' || $returnTime === '') {
+    echo json_encode(['available' => true, 'message' => '']);
     exit;
 }
 
-$newStart = "{$dateStart} {$timeStart}:00";
-$newEnd = "{$dateEnd} {$timeEnd}:00";
+$start = "{$borrowDate} {$borrowTime}:00";
+$end = "{$returnDate} {$returnTime}:00";
 
 try {
-    $stmt = $pdo->prepare(
-        "SELECT id, title, date_start, date_end, time_start, time_end
-         FROM facility_bookings
-         WHERE facility_id = ?
-           AND status NOT IN ('rejected','cancelled')
-           AND (CONCAT(date_start,' ',time_start) < ?)
-           AND (CONCAT(date_end,' ',time_end) > ?)
-         ORDER BY date_start ASC, time_start ASC
-         LIMIT 1"
-    );
-    $stmt->execute([$facilityId, $newEnd, $newStart]);
-    $row = $stmt->fetch();
-    if ($row) {
-        $msg = "Conflict with booking: " . (string)$row['title'] . " (" . (string)$row['date_start'] . " " . (string)$row['time_start'] . " - " . (string)$row['date_end'] . " " . (string)$row['time_end'] . ")";
-        echo json_encode(['conflict' => true, 'message' => $msg]);
+    $stmt = $pdo->prepare('SELECT quantity_available, name FROM items WHERE id = ?');
+    $stmt->execute([$itemId]);
+    $item = $stmt->fetch();
+    if (!$item) {
+        echo json_encode(['available' => false, 'message' => 'Item not found.']);
         exit;
     }
-} catch (Throwable) {}
+    $availableNow = (int)$item['quantity_available'];
 
-echo json_encode(['conflict' => false, 'message' => 'No conflict detected.']);
+    $stmt = $pdo->prepare(
+        "SELECT COALESCE(SUM(quantity_needed), 0)
+         FROM item_bookings
+         WHERE item_id = ?
+           AND status NOT IN ('rejected','cancelled')
+           AND (CONCAT(borrow_date,' ',borrow_time) < ?)
+           AND (CONCAT(return_date,' ',return_time) > ?)"
+    );
+    $stmt->execute([$itemId, $end, $start]);
+    $reserved = (int)$stmt->fetchColumn();
+    $effective = $availableNow - $reserved;
+
+    if ($effective >= $qty) {
+        echo json_encode(['available' => true, 'message' => 'Available.']);
+        exit;
+    }
+    echo json_encode(['available' => false, 'message' => 'Not enough quantity available for the selected dates. Available: ' . max(0, $effective)]);
+    exit;
+} catch (Throwable) {
+    echo json_encode(['available' => true, 'message' => 'Available.']);
+    exit;
+}
+
